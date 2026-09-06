@@ -1,0 +1,67 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+
+# =========================================
+# ALERTMANAGER
+# =========================================
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+
+# =========================================
+# ALERT RULES
+# =========================================
+
+rule_files:
+  - "/etc/prometheus/alerts.yml"
+
+
+# =========================================
+# SCRAPE CONFIGS
+# =========================================
+
+scrape_configs:
+
+  # =======================================
+  # CLOUDOPS BACKEND
+  # =======================================
+
+  - job_name: "cloudops-server"
+
+    scrape_interval: 5s
+
+    static_configs:
+      - targets:
+          - "server:5000"
+
+
+  # =======================================
+  # NODE EXPORTER
+  # =======================================
+
+  - job_name: "node-exporter"
+
+    scrape_interval: 5s
+
+    static_configs:
+      - targets:
+          - "node-exporter:9100"
+
+
+  # =======================================
+  # CADVISOR
+  # =======================================
+
+  - job_name: "cadvisor"
+
+    scrape_interval: 5s
+
+    static_configs:
+      - targets:
+          - "cadvisor:8080"

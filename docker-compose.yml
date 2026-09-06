@@ -1,0 +1,319 @@
+services:
+
+  # =========================================
+  # MONGODB
+  # =========================================
+
+  mongo:
+    image: mongo:7
+    container_name: cloudops-mongodb
+
+    restart: unless-stopped
+
+    ports:
+      - "27017:27017"
+
+    volumes:
+      - mongo-data:/data/db
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--eval",
+          "db.adminCommand('ping')"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - cloudops
+
+  # =========================================
+  # OLLAMA
+  # LOCAL AI / LLM + EMBEDDINGS
+  # =========================================
+
+  ollama:
+    image: ollama/ollama:latest
+
+    container_name: cloudops-ollama
+
+    restart: unless-stopped
+
+    ports:
+      - "11434:11434"
+
+    volumes:
+      - ollama-data:/root/.ollama
+
+    networks:
+      - cloudops
+
+
+  # =========================================
+  # NODE / EXPRESS BACKEND
+  # =========================================
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+
+    container_name: cloudops-server
+
+    restart: unless-stopped
+
+    env_file:
+      - ./server/.env
+
+    environment:
+      PORT: 5000
+      MONGO_URI: mongodb://mongo:27017/cloudops
+
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2:3b
+      OLLAMA_EMBED_MODEL: nomic-embed-text:latest
+
+      PROMETHEUS_URL: http://prometheus:9090
+
+      KUBERNETES_ENABLED: "true"
+      KUBECONFIG: /root/.kube/config
+      IS_DOCKER: "true"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.kube:/root/.kube:ro
+      - ~/.minikube:/root/.minikube:ro
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    depends_on:
+      mongo:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+    ports:
+      - "5000:5000"
+
+    networks:
+      - cloudops
+      - minikube
+
+
+  # =========================================
+  # REACT / VITE FRONTEND
+  # =========================================
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+
+    container_name: cloudops-client
+
+    restart: unless-stopped
+
+    environment:
+      VITE_API_URL: http://localhost:5000
+
+    depends_on:
+      - server
+
+    ports:
+      - "5173:5173"
+
+    networks:
+      - cloudops
+
+
+  # =========================================
+  # PROMETHEUS
+  # =========================================
+
+  prometheus:
+    image: prom/prometheus:latest
+
+    container_name: cloudops-prometheus
+
+    restart: unless-stopped
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+
+    ports:
+      - "9090:9090"
+
+    depends_on:
+      - server
+      - node-exporter
+      - cadvisor
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - cloudops
+
+  # =========================================
+  # ALERTMANAGER
+  # =========================================
+
+  alertmanager:
+    image: prom/alertmanager:latest
+
+    container_name: cloudops-alertmanager
+
+    restart: unless-stopped
+
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+
+    ports:
+      - "9093:9093"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    depends_on:
+      - server
+
+    networks:
+      - cloudops
+
+  # =========================================
+  # NODE EXPORTER
+  # HOST CPU / RAM / DISK METRICS
+  # =========================================
+
+  node-exporter:
+    image: prom/node-exporter:latest
+
+    container_name: cloudops-node-exporter
+
+    restart: unless-stopped
+
+    command:
+      - "--path.rootfs=/host"
+
+    volumes:
+      - /:/host:ro,rslave
+
+    ports:
+      - "9100:9100"
+
+    networks:
+      - cloudops
+
+
+  # =========================================
+  # CADVISOR
+  # DOCKER CONTAINER METRICS
+  # =========================================
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+
+    container_name: cloudops-cadvisor
+
+    restart: unless-stopped
+
+    privileged: true
+
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+
+    ports:
+      - "8080:8080"
+
+    networks:
+      - cloudops
+
+
+  # =========================================
+  # GRAFANA
+  # VISUALIZATION + DASHBOARDS
+  # =========================================
+
+  grafana:
+    image: grafana/grafana:latest
+
+    container_name: cloudops-grafana
+
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+      GF_SERVER_ROOT_URL: http://localhost:3000
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+    depends_on:
+      - prometheus
+
+    networks:
+      - cloudops
+
+
+# =========================================
+# NETWORK
+# =========================================
+
+networks:
+
+  cloudops:
+    name: cloudops-ai_default
+    driver: bridge
+
+  minikube:
+    name: minikube
+    external: true
+
+
+# =========================================
+# PERSISTENT VOLUMES
+# =========================================
+
+volumes:
+
+  mongo-data:
+    name: cloudops-ai-mongo-data
+
+  prometheus-data:
+    name: cloudops-ai-prometheus-data
+
+  grafana-data:
+    name: cloudops-ai-grafana-data
+
+  alertmanager-data:
+    name: cloudops-ai-alertmanager-data
+  
+  ollama-data:
+    name: cloudops-ai-ollama-data

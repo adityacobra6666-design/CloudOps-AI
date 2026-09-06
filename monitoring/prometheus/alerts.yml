@@ -1,0 +1,93 @@
+groups:
+
+  - name: cloudops-alerts
+
+    rules:
+
+      # Local Development & Demo Trigger Alert
+      - alert: SimulatedBackendFailure
+
+        expr: cloudops_http_requests_total{route="/api/test-error", status_code="500"} > 0
+
+        for: 5s
+
+        labels:
+          severity: critical
+          category: infrastructure
+
+        annotations:
+          summary: "Simulated Backend Service Failure"
+          description: "500 Internal Server Error detected on /api/test-error endpoint"
+
+
+      # Backend Down
+      - alert: CloudOpsServerDown
+
+        expr: up{job="cloudops-server"} == 0
+
+        for: 15s
+
+        labels:
+          severity: critical
+
+        annotations:
+          summary: "CloudOps backend down"
+          description: "Backend is not reachable"
+
+
+      # High HTTP Errors
+      - alert: HighHTTPErrorRate
+
+        expr: |
+          (
+            sum(rate(cloudops_http_requests_total{status_code=~"5.."}[2m]))
+            /
+            clamp_min(sum(rate(cloudops_http_requests_total[2m])),0.001)
+          ) > 0.01
+
+        for: 30s
+
+        labels:
+          severity: critical
+
+        annotations:
+          summary: "High HTTP error rate"
+          description: "5xx errors above threshold"
+
+
+      # High CPU
+      - alert: HighHostCPU
+
+        expr: |
+          100 * (
+            1 - avg(rate(node_cpu_seconds_total{mode="idle"}[2m]))
+          ) > 80
+
+        for: 30s
+
+        labels:
+          severity: warning
+
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage crossed 80%"
+
+
+      # Container Memory
+      - alert: ContainerHighMemory
+
+        expr: |
+          (
+          container_memory_usage_bytes{name!=""}
+          /
+          container_spec_memory_limit_bytes{name!=""}
+          ) > 0.85
+
+        for: 30s
+
+        labels:
+          severity: warning
+
+        annotations:
+          summary: "Container memory high"
+          description: "Container memory usage above 85%"

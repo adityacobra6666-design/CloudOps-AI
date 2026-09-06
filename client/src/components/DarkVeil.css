@@ -1,0 +1,19 @@
+.darkveil-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: -10;
+    overflow: hidden;
+    pointer-events: none;
+    background: #F5F9FC;
+    opacity: 0.15;
+}
+
+.darkveil-canvas canvas {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+}

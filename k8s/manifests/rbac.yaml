@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloudops-sa
+  namespace: cloudops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudops-role
+  namespace: cloudops
+rules:
+  # READ permissions
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudops-node-reader
+rules:
+  # Cluster-level READ access to nodes for cluster health monitoring
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudops-role-binding
+  namespace: cloudops
+subjects:
+  - kind: ServiceAccount
+    name: cloudops-sa
+    namespace: cloudops
+roleRef:
+  kind: Role
+  name: cloudops-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudops-node-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: cloudops-sa
+    namespace: cloudops
+roleRef:
+  kind: ClusterRole
+  name: cloudops-node-reader
+  apiGroup: rbac.authorization.k8s.io
