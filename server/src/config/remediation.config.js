@@ -23,14 +23,14 @@ const ALLOWED_TARGETS = {
         container: "cloudops-server",
         deployment: "cloudops-backend",
         displayName: "Backend Deployment",
-        healthEndpoint: "http://localhost:5000/",
+        healthEndpoint: "http://server:5000/",
         prometheusJob: "cloudops-server"
     },
     "cloudops-backend": {
         container: "cloudops-server",
         deployment: "cloudops-backend",
         displayName: "CloudOps Backend Deployment",
-        healthEndpoint: "http://localhost:5000/",
+        healthEndpoint: "http://server:5000/",
         prometheusJob: "cloudops-server"
     }
 };

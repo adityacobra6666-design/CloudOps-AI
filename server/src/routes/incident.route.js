@@ -11,81 +11,26 @@ const {
     alertWebhook
 } = require("../controllers/incidentController");
 
+const { protect, requireRole } = require("../middleware/auth.middleware");
+
 const router = express.Router();
 
+// =========================================
+// PUBLIC ALERTMANAGER WEBHOOK
+// =========================================
+router.post("/webhook", alertWebhook);
 
 // =========================================
-// GET ALL INCIDENTS
+// PROTECTED INCIDENT ROUTES (RBAC)
 // =========================================
+router.get("/", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getIncidents);
+router.get("/:id", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getIncidentById);
+router.get("/:id/activity", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getIncidentActivity);
 
-router.get(
-    "/",
-    getIncidents
-);
+router.post("/", protect, requireRole("ENGINEER", "ADMIN"), createIncident);
+router.put("/:id", protect, requireRole("ENGINEER", "ADMIN"), updateIncident);
+router.post("/:id/analyze", protect, requireRole("ENGINEER", "ADMIN"), analyzeIncidentWithAI);
 
-
-// =========================================
-// CREATE INCIDENT
-// =========================================
-
-router.post(
-    "/",
-    createIncident
-);
-
-
-// =========================================
-// GET ONE INCIDENT
-// =========================================
-
-router.get(
-    "/:id",
-    getIncidentById
-);
-
-
-// =========================================
-// GET INCIDENT ACTIVITY
-// =========================================
-
-router.get(
-    "/:id/activity",
-    getIncidentActivity
-);
-
-
-// =========================================
-// UPDATE INCIDENT
-// =========================================
-
-router.put(
-    "/:id",
-    updateIncident
-);
-
-
-// =========================================
-// DELETE INCIDENT
-// =========================================
-
-router.delete(
-    "/:id",
-    deleteIncident
-);
-
-
-// =========================================
-// AI ANALYSIS
-// =========================================
-
-router.post(
-    "/:id/analyze",
-    analyzeIncidentWithAI
-);
-
-router.post(
-    "/webhook",
-    alertWebhook
-);
+router.delete("/:id", protect, requireRole("ADMIN"), deleteIncident);
 
 module.exports = router;

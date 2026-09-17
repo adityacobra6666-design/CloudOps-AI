@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
     getIncidents,
@@ -9,7 +9,6 @@ import {
     executeRemediation,
     getRemediationHistory
 } from "../services/api";
-import Header from "../components/Header";
 
 export default function IncidentsPage() {
     const { user } = useOutletContext() || {};
@@ -25,6 +24,7 @@ export default function IncidentsPage() {
     // Selected Incident Modal & State
     const [selectedIncident, setSelectedIncident] = useState(null);
     const [analyzingId, setAnalyzingId] = useState(null);
+    const [analysisError, setAnalysisError] = useState(null);
     const [remediatingId, setRemediatingId] = useState(null);
     const [remediationHistory, setRemediationHistory] = useState([]);
     const [remediationMsg, setRemediationMsg] = useState(null);
@@ -35,23 +35,49 @@ export default function IncidentsPage() {
     const [newSeverity, setNewSeverity] = useState("MEDIUM");
     const [newDescription, setNewDescription] = useState("");
 
-    const fetchIncidentsData = async () => {
-        try {
+    const isFetchingRef = useRef(false);
+    const analysisRequestRef = useRef(0);
+
+    const fetchIncidentsData = async (isInitial = false) => {
+        if (isFetchingRef.current) return;
+        isFetchingRef.current = true;
+
+        if (isInitial) {
             setLoading(true);
+        }
+
+        try {
             const data = await getIncidents();
             const incList = Array.isArray(data) ? data : (data?.incidents || []);
             setIncidents(incList);
             setError(null);
+
+            // Keep selected incident updated with latest data if modal is open
+            if (selectedIncident?._id) {
+                const updatedSel = incList.find(i => String(i._id) === String(selectedIncident._id));
+                if (updatedSel) {
+                    setSelectedIncident(prev => ({ ...prev, ...updatedSel }));
+                }
+            }
         } catch (err) {
-            setError(err.message || "Failed to load incidents");
+            if (isInitial) {
+                setError(err.message || "Failed to load incidents");
+            }
         } finally {
-            setLoading(false);
+            if (isInitial) {
+                setLoading(false);
+            }
+            isFetchingRef.current = false;
         }
     };
 
+    // Initial load & periodic polling every 12 seconds
     useEffect(() => {
-        fetchIncidentsData();
-        const interval = setInterval(fetchIncidentsData, 5000);
+        fetchIncidentsData(true);
+        const interval = setInterval(() => {
+            fetchIncidentsData(false);
+        }, 12000);
+
         return () => clearInterval(interval);
     }, []);
 
@@ -62,7 +88,7 @@ export default function IncidentsPage() {
                 .then(res => setRemediationHistory(res.data || []))
                 .catch(() => setRemediationHistory([]));
         }
-    }, [selectedIncident]);
+    }, [selectedIncident?._id]);
 
     const handleCreateIncident = async (e) => {
         e.preventDefault();
@@ -77,26 +103,52 @@ export default function IncidentsPage() {
             setNewTitle("");
             setNewDescription("");
             setShowCreateModal(false);
-            fetchIncidentsData();
+            fetchIncidentsData(false);
         } catch (err) {
             alert(err.message || "Failed to create incident");
         }
     };
 
     const handleAnalyze = async (incidentId) => {
-        try {
-            setAnalyzingId(incidentId);
-            const updated = await analyzeIncident(incidentId);
+        if (!incidentId || analyzingId) return;
+        const targetId = String(incidentId);
+        const requestId = ++analysisRequestRef.current;
 
-            // Update local incident array
-            setIncidents(prev => prev.map(inc => inc._id === incidentId ? updated : inc));
-            if (selectedIncident?._id === incidentId) {
-                setSelectedIncident(updated);
+        try {
+            setAnalyzingId(targetId);
+            setAnalysisError(null);
+
+            const res = await analyzeIncident(targetId);
+
+            if (requestId !== analysisRequestRef.current) {
+                return;
+            }
+
+            if (!res || res.success === false) {
+                throw new Error(res?.message || "AI Analysis failed to complete");
+            }
+
+            const updatedInc = res.incident || {
+                ...selectedIncident,
+                aiAnalysis: res.analysis,
+                remediationDecision: res.remediationDecision || selectedIncident?.remediationDecision
+            };
+
+            setIncidents(prev => prev.map(inc => String(inc._id) === targetId ? { ...inc, ...updatedInc } : inc));
+            if (selectedIncident && String(selectedIncident._id) === targetId) {
+                setSelectedIncident(prev => ({ ...prev, ...updatedInc }));
             }
         } catch (err) {
-            alert(err.message || "AI Analysis failed");
+            if (requestId !== analysisRequestRef.current) {
+                return;
+            }
+            console.error("AI Analysis error:", err);
+            const msg = err.message || "AI Analysis failed";
+            setAnalysisError(msg);
         } finally {
-            setAnalyzingId(null);
+            if (requestId === analysisRequestRef.current) {
+                setAnalyzingId(null);
+            }
         }
     };
 
@@ -108,10 +160,9 @@ export default function IncidentsPage() {
             const res = await executeRemediation(incidentId);
             setRemediationMsg(`Result: ${res.message}`);
 
-            // Refresh remediation history & incident
             const updatedHistory = await getRemediationHistory(incidentId);
             setRemediationHistory(updatedHistory.data || []);
-            fetchIncidentsData();
+            fetchIncidentsData(false);
         } catch (err) {
             setRemediationMsg(`Remediation Error: ${err.message}`);
         } finally {
@@ -124,7 +175,7 @@ export default function IncidentsPage() {
             const updated = await updateIncident(incidentId, { status: newStatus });
             setIncidents(prev => prev.map(inc => inc._id === incidentId ? updated : inc));
             if (selectedIncident?._id === incidentId) {
-                setSelectedIncident(updated);
+                setSelectedIncident(prev => ({ ...prev, ...updated }));
             }
         } catch (err) {
             alert(err.message || "Failed to update incident status");
@@ -144,42 +195,65 @@ export default function IncidentsPage() {
         }
     };
 
+    const getAnalysisFields = (aiAnalysis) => {
+        if (!aiAnalysis) return null;
+        if (typeof aiAnalysis === "object") {
+            return {
+                rootCause: aiAnalysis.rootCause || aiAnalysis.rawText || "No specific root cause generated.",
+                evidence: aiAnalysis.evidence || "Based on telemetry metrics & Alertmanager payload.",
+                recommendation: aiAnalysis.recommendation || "Scaling or restarting service instance.",
+                confidence: aiAnalysis.confidence !== undefined ? aiAnalysis.confidence : 85
+            };
+        }
+        const str = String(aiAnalysis);
+        const extractSection = (heading) => {
+            const regex = new RegExp(`${heading}:?\\s*([\\s\\S]*?)(?=(ROOT CAUSE|EVIDENCE|RECOMMENDATION|CONFIDENCE|$))`, "i");
+            const match = str.match(regex);
+            return match ? match[1].trim() : "";
+        };
+        const rc = extractSection("ROOT CAUSE");
+        const ev = extractSection("EVIDENCE");
+        const rec = extractSection("RECOMMENDATION");
+        const confMatch = str.match(/CONFIDENCE:?\s*(\d+)%/i);
+
+        return {
+            rootCause: rc || str,
+            evidence: ev || "Based on telemetry metrics & Alertmanager payload.",
+            recommendation: rec || "Scaling or restarting service instance.",
+            confidence: confMatch ? parseInt(confMatch[1], 10) : 85
+        };
+    };
+
     // Filter logic
     const filteredIncidents = incidents.filter(inc => {
         const matchesSearch = inc.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
             (inc.description && inc.description.toLowerCase().includes(searchTerm.toLowerCase()));
-        const matchesSev = severityFilter === "ALL" || inc.severity?.toUpperCase() === severityFilter;
-        const matchesStatus = statusFilter === "ALL" || inc.status?.toUpperCase() === statusFilter;
-        return matchesSearch && matchesSev && matchesStatus;
+
+        const matchesSeverity = severityFilter === "ALL" || inc.severity?.toUpperCase() === severityFilter.toUpperCase();
+        const matchesStatus = statusFilter === "ALL" || inc.status?.toUpperCase() === statusFilter.toUpperCase();
+
+        return matchesSearch && matchesSeverity && matchesStatus;
     });
 
     const isEngineerOrAdmin = user?.role === "ENGINEER" || user?.role === "ADMIN";
 
     return (
         <div className="page-container">
-            <Header
-                title="Incident Management Center"
-                onRefresh={fetchIncidentsData}
-            />
-
-            {/* TOP CONTROLS: SEARCH, FILTERS, CREATE BUTTON */}
-            <div className="incident-toolbar">
-                <div className="toolbar-search">
-                    <span className="search-icon">🔍</span>
+            {/* TOOLBAR */}
+            <div className="filter-bar">
+                <div className="filter-left">
                     <input
                         type="text"
-                        placeholder="Search incidents by title or payload..."
+                        placeholder="Search incidents by title or description..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         className="search-input"
                     />
-                </div>
 
-                <div className="toolbar-filters">
                     <select
                         value={severityFilter}
                         onChange={(e) => setSeverityFilter(e.target.value)}
-                        className="select-filter"
+                        className="filter-select"
                     >
                         <option value="ALL">All Severities</option>
                         <option value="CRITICAL">Critical</option>
@@ -191,11 +265,11 @@ export default function IncidentsPage() {
                     <select
                         value={statusFilter}
                         onChange={(e) => setStatusFilter(e.target.value)}
-                        className="select-filter"
+                        className="filter-select"
                     >
                         <option value="ALL">All Statuses</option>
                         <option value="OPEN">Open</option>
-                        <option value="IN_PROGRESS">In Progress</option>
+                        <option value="INVESTIGATING">Investigating</option>
                         <option value="RESOLVED">Resolved</option>
                         <option value="CLOSED">Closed</option>
                     </select>
@@ -256,7 +330,10 @@ export default function IncidentsPage() {
                                                 <button
                                                     type="button"
                                                     className="btn-sm"
-                                                    onClick={() => setSelectedIncident(inc)}
+                                                    onClick={() => {
+                                                        setSelectedIncident(inc);
+                                                        setAnalysisError(null);
+                                                    }}
                                                 >
                                                     View Details
                                                 </button>
@@ -361,36 +438,57 @@ export default function IncidentsPage() {
                                     <button
                                         type="button"
                                         className="btn-sm btn-accent"
-                                        disabled={analyzingId === selectedIncident._id}
-                                        onClick={() => handleAnalyze(selectedIncident._id)}
+                                        disabled={Boolean(analyzingId)}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleAnalyze(selectedIncident._id || selectedIncident.id);
+                                        }}
+                                        style={{
+                                            cursor: analyzingId ? "not-allowed" : "pointer",
+                                            opacity: analyzingId ? 0.7 : 1,
+                                            pointerEvents: "auto"
+                                        }}
                                     >
-                                        {analyzingId === selectedIncident._id ? "Analyzing..." : "✦ Run AI Analysis"}
+                                        {analyzingId && String(analyzingId) === String(selectedIncident._id || selectedIncident.id) ? "Analyzing..." : "✦ Run AI Analysis"}
                                     </button>
                                 </div>
 
-                                {selectedIncident.aiAnalysis ? (
-                                    <div className="ai-results">
-                                        <div className="ai-block">
-                                            <span className="ai-lbl">ROOT CAUSE</span>
-                                            <p>{selectedIncident.aiAnalysis.rootCause || "No specific root cause generated."}</p>
-                                        </div>
-                                        <div className="ai-block">
-                                            <span className="ai-lbl">EVIDENCE</span>
-                                            <p>{selectedIncident.aiAnalysis.evidence || "Based on telemetry metrics & Alertmanager payload."}</p>
-                                        </div>
-                                        <div className="ai-block">
-                                            <span className="ai-lbl">RECOMMENDATION</span>
-                                            <p>{selectedIncident.aiAnalysis.recommendation || "Scaling or restarting service instance."}</p>
-                                        </div>
-                                        {selectedIncident.aiAnalysis.confidence !== undefined && (
-                                            <div className="confidence-pill">
-                                                Confidence Score: {selectedIncident.aiAnalysis.confidence}%
-                                            </div>
-                                        )}
+                                {analysisError && (
+                                    <div className="remediation-msg-alert error" style={{ marginBottom: "12px", color: "#EF4444" }}>
+                                        ⚠️ {analysisError}
                                     </div>
-                                ) : (
-                                    <p className="text-muted">Click "Run AI Analysis" to perform RAG-assisted Llama 3.2 root cause evaluation.</p>
                                 )}
+
+                                {(() => {
+                                    const ai = getAnalysisFields(selectedIncident.aiAnalysis);
+                                    if (!ai) {
+                                        return (
+                                            <p className="text-muted">Click "Run AI Analysis" to perform RAG-assisted Llama 3.2 root cause evaluation.</p>
+                                        );
+                                    }
+
+                                    return (
+                                        <div className="ai-results">
+                                            <div className="ai-block">
+                                                <span className="ai-lbl">ROOT CAUSE</span>
+                                                <p>{ai.rootCause}</p>
+                                            </div>
+                                            <div className="ai-block">
+                                                <span className="ai-lbl">EVIDENCE</span>
+                                                <p>{ai.evidence}</p>
+                                            </div>
+                                            <div className="ai-block">
+                                                <span className="ai-lbl">RECOMMENDATION</span>
+                                                <p>{ai.recommendation}</p>
+                                            </div>
+                                            {ai.confidence !== undefined && (
+                                                <div className="confidence-pill">
+                                                    Confidence Score: {ai.confidence}%
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
                             </div>
 
                             {/* AUTONOMOUS REMEDIATION PANEL */}
@@ -448,17 +546,23 @@ export default function IncidentsPage() {
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {remediationHistory.map(act => (
-                                                    <tr key={act._id}>
-                                                        <td>{act.action}</td>
-                                                        <td>{act.target}</td>
+                                                {remediationHistory.map((item) => (
+                                                    <tr key={item._id}>
+                                                        <td><strong>{item.action}</strong></td>
+                                                        <td>{item.target}</td>
                                                         <td>
-                                                            <span className={`status-pill ${act.status?.toLowerCase()}`}>
-                                                                {act.status}
+                                                            <span className={`status-pill ${item.status?.toLowerCase()}`}>
+                                                                {item.status}
                                                             </span>
                                                         </td>
-                                                        <td>{act.verification?.message || "N/A"}</td>
-                                                        <td className="text-muted">{new Date(act.createdAt).toLocaleString()}</td>
+                                                        <td>
+                                                            <span className={`status-pill ${item.verification?.status?.toLowerCase() || "unknown"}`}>
+                                                                {item.verification?.status || "PENDING"}
+                                                            </span>
+                                                        </td>
+                                                        <td className="text-muted">
+                                                            {new Date(item.createdAt).toLocaleString()}
+                                                        </td>
                                                     </tr>
                                                 ))}
                                             </tbody>
@@ -466,48 +570,29 @@ export default function IncidentsPage() {
                                     </div>
                                 </div>
                             )}
-
-                            {/* RAG SIMILAR INCIDENTS */}
-                            {selectedIncident.similarIncidents && selectedIncident.similarIncidents.length > 0 && (
-                                <div className="detail-section">
-                                    <h4>RAG Matches (Similar Historical Incidents)</h4>
-                                    <div className="rag-list">
-                                        {selectedIncident.similarIncidents.map((sim, i) => (
-                                            <div key={i} className="rag-item">
-                                                <span className="sim-score">Similarity: {Math.round((sim.similarity || 0.85) * 100)}%</span>
-                                                <span className="sim-title">{sim.title}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
-                        <div className="modal-footer flex-between">
-                            <div className="footer-left-btns">
-                                {isEngineerOrAdmin && (
-                                    <>
-                                        {selectedIncident.status !== "RESOLVED" && (
-                                            <button
-                                                type="button"
-                                                className="btn-secondary"
-                                                onClick={() => handleUpdateStatus(selectedIncident._id, "RESOLVED")}
-                                            >
-                                                Mark Resolved
-                                            </button>
-                                        )}
-                                        {user?.role === "ADMIN" && (
-                                            <button
-                                                type="button"
-                                                className="btn-danger"
-                                                onClick={() => handleDelete(selectedIncident._id)}
-                                            >
-                                                Delete
-                                            </button>
-                                        )}
-                                    </>
-                                )}
-                            </div>
+                        <div className="modal-footer">
+                            {isEngineerOrAdmin && (
+                                <div className="footer-actions-left">
+                                    {selectedIncident.status !== "RESOLVED" && (
+                                        <button
+                                            type="button"
+                                            className="btn-success"
+                                            onClick={() => handleUpdateStatus(selectedIncident._id, "RESOLVED")}
+                                        >
+                                            Mark Resolved
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        className="btn-danger"
+                                        onClick={() => handleDelete(selectedIncident._id)}
+                                    >
+                                        Delete Incident
+                                    </button>
+                                </div>
+                            )}
                             <button type="button" className="btn-secondary" onClick={() => setSelectedIncident(null)}>Close</button>
                         </div>
                     </div>

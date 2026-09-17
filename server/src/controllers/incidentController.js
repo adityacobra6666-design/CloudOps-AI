@@ -13,7 +13,11 @@ exports.createIncident = async (req, res) => {
 
     try {
 
-        const incident = await Incident.create(req.body);
+        // Whitelist allowed fields to prevent mass assignment
+        const { title, description, severity, source, category, status, server } = req.body;
+        const incident = await Incident.create({
+            title, description, severity, source, category, status, server
+        });
 
 
         res.status(201).json({
@@ -26,7 +30,7 @@ exports.createIncident = async (req, res) => {
 
         res.status(500).json({
             success:false,
-            message:error.message
+            message: "Failed to create incident"
         });
 
     }
@@ -203,7 +207,7 @@ exports.alertWebhook = async (req, res) => {
         console.error("❌ [ALERTMANAGER WEBHOOK ERROR]:", error.message);
         return res.status(500).json({
             success: false,
-            message: `Webhook processing error: ${error.message}`
+            message: "Webhook processing error"
         });
     }
 };
@@ -251,9 +255,18 @@ exports.updateIncident = async(req,res)=>{
 
     try{
 
+        // Whitelist allowed update fields
+        const allowed = ['title', 'description', 'severity', 'source', 'category', 'status', 'server'];
+        const updates = {};
+        for (const key of allowed) {
+            if (req.body[key] !== undefined) {
+                updates[key] = req.body[key];
+            }
+        }
+
         const incident = await Incident.findByIdAndUpdate(
             req.params.id,
-            req.body,
+            updates,
             {
                 new:true
             }
@@ -270,7 +283,7 @@ exports.updateIncident = async(req,res)=>{
 
         res.status(500).json({
             success:false,
-            message:error.message
+            message: "Failed to update incident"
         });
 
     }
@@ -308,240 +321,110 @@ exports.deleteIncident = async(req,res)=>{
 
 
 
-// AI ANALYSIS PLACEHOLDER
+// AI ANALYSIS HANDLER
 exports.analyzeIncidentWithAI = async (req, res) => {
-
     try {
-
         const { id } = req.params;
 
-
-        // ==========================================
-        // FIND INCIDENT
-        // ==========================================
-
-        const incident =
-            await Incident.findById(id);
-
-
+        // 1. FIND INCIDENT
+        const incident = await Incident.findById(id);
         if (!incident) {
-
             return res.status(404).json({
-
                 success: false,
-
                 message: "Incident not found"
-
             });
-
         }
 
+        const incidentText = `${incident.title} ${incident.description || ""} severity: ${incident.severity} category: ${incident.category || ""}`;
 
-        // ==========================================
-        // CREATE INCIDENT TEXT
-        // ==========================================
-
-        const incidentText = `
-            ${incident.title}
-
-            ${incident.description || ""}
-
-            severity: ${incident.severity}
-
-            category: ${incident.category || ""}
-        `;
-
-
-        // ==========================================
-        // CREATE QUERY EMBEDDING
-        // ==========================================
-
-        const queryEmbedding =
-            await createEmbedding(incidentText);
-
-
-        // ==========================================
-        // GET HISTORICAL INCIDENTS
-        // ==========================================
-
-        const historicalIncidents =
-            await Incident.find({
-                _id: { $ne: incident._id }
-            })
-            .sort({
-                createdAt: -1
-            })
-            .limit(50);
-
-
-        // ==========================================
-        // SIMILARITY SEARCH
-        // ==========================================
-
-        const scoredIncidents = [];
-
-
-        for (const historical of historicalIncidents) {
-
-            const historicalText = `
-                ${historical.title}
-
-                ${historical.description || ""}
-
-                severity: ${historical.severity}
-
-                category: ${historical.category || ""}
-            `;
-
-
-            const historicalEmbedding =
-                historical.embedding ||
-                await createEmbedding(
-                    historicalText
-                );
-
-
-            const similarity =
-                cosineSimilarity(
-                    queryEmbedding,
-                    historicalEmbedding
-                );
-
-
-            scoredIncidents.push({
-
-                incident: historical,
-
-                similarity
-
-            });
-
+        // 2. CREATE QUERY EMBEDDING (Safe fallback if Ollama embedding fails)
+        let queryEmbedding = null;
+        try {
+            queryEmbedding = await createEmbedding(incidentText);
+        } catch (embErr) {
+            console.warn("[AI ANALYSIS] Embedding creation warning:", embErr.message);
         }
 
+        // 3. SIMILARITY SEARCH ON HISTORICAL INCIDENTS
+        let topMatches = [];
+        if (queryEmbedding && Array.isArray(queryEmbedding) && queryEmbedding.length > 0) {
+            try {
+                const historicalIncidents = await Incident.find({
+                    _id: { $ne: incident._id }
+                }).sort({ createdAt: -1 }).limit(50);
 
-        // ==========================================
-        // TOP 3 SIMILAR INCIDENTS
-        // ==========================================
+                const scoredIncidents = [];
+                for (const historical of historicalIncidents) {
+                    let histEmbedding = historical.embedding;
+                    if (!histEmbedding || !Array.isArray(histEmbedding) || histEmbedding.length !== queryEmbedding.length) {
+                        const histText = `${historical.title} ${historical.description || ""} severity: ${historical.severity} category: ${historical.category || ""}`;
+                        histEmbedding = await createEmbedding(histText);
+                    }
 
-        scoredIncidents.sort(
-            (a, b) =>
-                b.similarity - a.similarity
+                    if (histEmbedding && Array.isArray(histEmbedding) && histEmbedding.length === queryEmbedding.length) {
+                        const similarity = cosineSimilarity(queryEmbedding, histEmbedding);
+                        scoredIncidents.push({ incident: historical, similarity });
+                    }
+                }
+
+                scoredIncidents.sort((a, b) => b.similarity - a.similarity);
+                topMatches = scoredIncidents.slice(0, 3).map(item => item.incident);
+            } catch (histErr) {
+                console.warn("[AI ANALYSIS] Historical similarity search warning:", histErr.message);
+            }
+        }
+
+        // 4. GENERATE AI ANALYSIS (LLAMA 3.2)
+        const analysis = await generateAnalysis(incident, topMatches);
+
+        // 5. SAVE AI RESULT TO MONGODB
+        const updateFields = {
+            aiAnalysis: analysis,
+            aiAnalyzedAt: new Date()
+        };
+        if (queryEmbedding && Array.isArray(queryEmbedding) && queryEmbedding.length > 0) {
+            updateFields.embedding = queryEmbedding;
+        }
+
+        const updatedIncident = await Incident.findByIdAndUpdate(
+            incident._id,
+            { $set: updateFields },
+            { new: true }
         );
 
-
-        const topMatches =
-            scoredIncidents
-                .slice(0, 3)
-                .map(item => item.incident);
-
-
-        // ==========================================
-        // GENERATE AI ANALYSIS
-        // ==========================================
-
-        const analysis =
-            await generateAnalysis(
-                incident,
-                topMatches
-            );
-
-
-        // ==========================================
-        // SAVE AI RESULT
-        // ==========================================
-	
-	await Incident.updateOne(
-	    { _id: incident._id },
-   	    {
-        	$set: {
-            		aiAnalysis: analysis,
-            		aiAnalyzedAt: new Date(),
-            		embedding: queryEmbedding
-        	}
-    	    }
-	);
-
-
-        // ==========================================
-        // REMEDIATION DECISION
-        // ==========================================
-
+        // 6. REMEDIATION DECISION
         let remediationDecision = null;
-
         try {
-
-            remediationDecision =
-                await generateRemediationDecision(
-                    incident,
-                    analysis
-                );
-
+            remediationDecision = await generateRemediationDecision(updatedIncident, analysis);
             if (remediationDecision) {
-
                 await Incident.updateOne(
                     { _id: incident._id },
-                    {
-                        $set: {
-                            remediationDecision
-                        }
-                    }
+                    { $set: { remediationDecision } }
                 );
-
-                console.log(
-                    "💡 Remediation decision saved"
-                );
+                updatedIncident.remediationDecision = remediationDecision;
             }
-
         } catch (decisionError) {
-
-            console.error(
-                "⚠️ Remediation decision failed (non-blocking):",
-                decisionError.message
-            );
+            console.error("⚠️ Remediation decision failed (non-blocking):", decisionError.message);
         }
 
-
-        // ==========================================
-        // RESPONSE
-        // ==========================================
-
-        res.json({
-
+        // 7. RETURN JSON RESPONSE
+        return res.json({
             success: true,
-
             incidentId: incident._id,
-
-            similarIncidents:
-                topMatches.map(item => ({
-                    id: item._id,
-                    title: item.title
-                })),
-
+            incident: updatedIncident,
             analysis,
-
+            similarIncidents: topMatches.map(item => ({
+                id: item._id,
+                title: item.title
+            })),
             remediationDecision
-
         });
-
 
     } catch (error) {
-
-        console.error(
-            "AI ANALYSIS ERROR:",
-            error
-        );
-
-
-        res.status(500).json({
-
+        console.error("AI ANALYSIS ERROR:", error.message || error);
+        return res.status(500).json({
             success: false,
-
-            message: "AI analysis failed",
-
-            error: error.message
-
+            message: `AI analysis failed: ${error.message || "Internal server error"}`
         });
-
     }
-
 };

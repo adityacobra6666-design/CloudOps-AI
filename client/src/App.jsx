@@ -12,6 +12,8 @@ import Layout from "./components/Layout";
 
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import Overview from "./pages/Overview";
 import Infrastructure from "./pages/Infrastructure";
 import IncidentsPage from "./pages/IncidentsPage";
@@ -19,30 +21,35 @@ import AIOperations from "./pages/AIOperations";
 import KubernetesPage from "./pages/KubernetesPage";
 import ReliabilityPage from "./pages/ReliabilityPage";
 import ObservabilityPage from "./pages/ObservabilityPage";
+import { useAuth } from "./context/AuthContext";
 
 import "./index.css";
 import "./AuthOverlay.css";
-
 
 /* =========================================
    PROTECTED ROUTE
 ========================================= */
 
 function ProtectedRoute({ children }) {
-    const token = localStorage.getItem("token");
+    const { isAuthenticated, loading } = useAuth();
 
-    if (!token) {
+    if (loading) {
         return (
-            <Navigate
-                to="/login"
-                replace
-            />
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", color: "#94a3b8" }}>
+                <div className="auth-spinner" style={{ width: "24px", height: "24px", borderWidth: "3px" }}></div>
+                <span style={{ marginLeft: "12px", fontSize: "0.95rem" }}>Authenticating session...</span>
+            </div>
         );
+    }
+
+    if (!isAuthenticated) {
+        return <Navigate to="/login" replace />;
     }
 
     return children;
 }
 
+import ThemeToggle from "./components/ThemeToggle";
 
 /* =========================================
    AUTH / USER ACTIONS
@@ -52,45 +59,37 @@ function TopActions() {
     const location = useLocation();
     const navigate = useNavigate();
 
-    /* LOGIN → REGISTER */
-    if (location.pathname === "/login") {
-        return (
-            <div className="global-auth-nav">
-                <span className="auth-nav-text">
-                    Don't have an account?
-                </span>
-                <button
-                    type="button"
-                    className="auth-nav-button"
-                    onClick={() => navigate("/register")}
-                >
-                    Create Account
-                </button>
-            </div>
-        );
-    }
+    const isAuthPage = ["/login", "/register", "/forgot-password", "/reset-password"].includes(location.pathname);
 
-    /* REGISTER → LOGIN */
-    if (location.pathname === "/register") {
-        return (
-            <div className="global-auth-nav">
-                <span className="auth-nav-text">
-                    Already have an account?
-                </span>
-                <button
-                    type="button"
-                    className="auth-nav-button"
-                    onClick={() => navigate("/login")}
-                >
-                    Login
-                </button>
-            </div>
-        );
-    }
+    if (!isAuthPage) return null;
 
-    return null;
+    return (
+        <div className="global-auth-nav">
+            {location.pathname === "/login" && (
+                <>
+                    <span className="auth-nav-text">Don't have an account?</span>
+                    <button type="button" className="auth-nav-button" onClick={() => navigate("/register")}>
+                        Create Account
+                    </button>
+                </>
+            )}
+            {location.pathname === "/register" && (
+                <>
+                    <span className="auth-nav-text">Already have an account?</span>
+                    <button type="button" className="auth-nav-button" onClick={() => navigate("/login")}>
+                        Login
+                    </button>
+                </>
+            )}
+            {["/forgot-password", "/reset-password"].includes(location.pathname) && (
+                <button type="button" className="auth-nav-button" onClick={() => navigate("/login")}>
+                    Back to Login
+                </button>
+            )}
+            <ThemeToggle />
+        </div>
+    );
 }
-
 
 /* =========================================
    MAIN APP
@@ -119,6 +118,8 @@ function App() {
                     {/* PUBLIC AUTH ROUTES */}
                     <Route path="/login" element={<Login />} />
                     <Route path="/register" element={<Register />} />
+                    <Route path="/forgot-password" element={<ForgotPassword />} />
+                    <Route path="/reset-password" element={<ResetPassword />} />
 
                     {/* PROTECTED CONTROL CENTER ROUTES */}
                     <Route

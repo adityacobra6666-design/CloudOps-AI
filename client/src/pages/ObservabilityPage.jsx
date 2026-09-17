@@ -10,8 +10,13 @@ import {
     Legend
 } from "recharts";
 import { getObservabilityTelemetry } from "../services/api";
+import { useTheme } from "../context/ThemeContext";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function ObservabilityPage() {
+    const { theme } = useTheme();
+    const isDark = theme === "dark";
+
     const [range, setRange] = useState("30m");
     const [telemetry, setTelemetry] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -81,17 +86,17 @@ export default function ObservabilityPage() {
         if (active && payload && payload.length) {
             return (
                 <div style={{
-                    backgroundColor: "#0F172A",
-                    color: "#F8FAFC",
+                    backgroundColor: isDark ? "#172033" : "#FFFFFF",
+                    color: isDark ? "#F8FAFC" : "#172033",
                     padding: "8px 12px",
-                    borderRadius: "6px",
-                    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-                    border: "1px solid #334155",
+                    borderRadius: "8px",
+                    boxShadow: isDark ? "0 4px 12px rgba(0,0,0,0.5)" : "0 4px 12px rgba(15,23,42,0.1)",
+                    border: isDark ? "1px solid #263449" : "1px solid #DCE6EF",
                     fontSize: "0.85rem"
                 }}>
-                    <p style={{ margin: "0 0 4px 0", fontWeight: "600", color: "#94A3B8" }}>{label}</p>
+                    <p style={{ margin: "0 0 4px 0", fontWeight: "600", color: isDark ? "#94A3B8" : "#64748B" }}>{label}</p>
                     {payload.map((entry, index) => (
-                        <p key={`item-${index}`} style={{ margin: "2px 0", color: entry.color, fontWeight: "500" }}>
+                        <p key={`item-${index}`} style={{ margin: "2px 0", color: entry.color, fontWeight: "600" }}>
                             {entry.name}: {entry.value} {unit || ""}
                         </p>
                     ))}
@@ -123,6 +128,9 @@ export default function ObservabilityPage() {
     const summary = telemetry?.summary || {};
     const metrics = telemetry?.metrics || {};
     const services = telemetry?.services || [];
+
+    const gridStroke = isDark ? "#263449" : "#E2E8F0";
+    const axisStroke = isDark ? "#CBD5E1" : "#64748B";
 
     return (
         <div className="obs-page-container">
@@ -162,7 +170,10 @@ export default function ObservabilityPage() {
                         </span>
                         {isRefreshing ? "Refreshing..." : "Refresh"}
                     </button>
+
+                    <ThemeToggle />
                 </div>
+
             </div>
 
             {/* GLOBAL LOADING STATE */}
@@ -292,9 +303,9 @@ export default function ObservabilityPage() {
                                 <div style={{ width: "100%", height: 260 }}>
                                     <ResponsiveContainer>
                                         <LineChart data={metrics.cpu} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickLine={false} />
-                                            <YAxis stroke="#94A3B8" fontSize={12} unit="%" domain={[0, 100]} tickLine={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                                            <XAxis dataKey="time" stroke={axisStroke} fontSize={12} tickLine={false} />
+                                            <YAxis stroke={axisStroke} fontSize={12} unit="%" domain={[0, 100]} tickLine={false} />
                                             <Tooltip content={(props) => renderCustomTooltip({ ...props, unit: "%" })} />
                                             <Line type="monotone" dataKey="value" name="CPU Usage" stroke="#0284C7" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
                                         </LineChart>
@@ -317,9 +328,9 @@ export default function ObservabilityPage() {
                                 <div style={{ width: "100%", height: 260 }}>
                                     <ResponsiveContainer>
                                         <LineChart data={metrics.memory} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickLine={false} />
-                                            <YAxis stroke="#94A3B8" fontSize={12} unit="%" domain={[0, 100]} tickLine={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                                            <XAxis dataKey="time" stroke={axisStroke} fontSize={12} tickLine={false} />
+                                            <YAxis stroke={axisStroke} fontSize={12} unit="%" domain={[0, 100]} tickLine={false} />
                                             <Tooltip content={(props) => renderCustomTooltip({ ...props, unit: "%" })} />
                                             <Line type="monotone" dataKey="value" name="Memory Usage" stroke="#6366F1" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
                                         </LineChart>
@@ -342,9 +353,9 @@ export default function ObservabilityPage() {
                                 <div style={{ width: "100%", height: 260 }}>
                                     <ResponsiveContainer>
                                         <LineChart data={metrics.requestRate} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickLine={false} />
-                                            <YAxis stroke="#94A3B8" fontSize={12} unit=" req/s" tickLine={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                                            <XAxis dataKey="time" stroke={axisStroke} fontSize={12} tickLine={false} />
+                                            <YAxis stroke={axisStroke} fontSize={12} unit=" req/s" tickLine={false} />
                                             <Tooltip content={(props) => renderCustomTooltip({ ...props, unit: "req/s" })} />
                                             <Line type="monotone" dataKey="value" name="Request Rate" stroke="#10B981" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
                                         </LineChart>
@@ -367,9 +378,9 @@ export default function ObservabilityPage() {
                                 <div style={{ width: "100%", height: 260 }}>
                                     <ResponsiveContainer>
                                         <LineChart data={metrics.errorRate} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickLine={false} />
-                                            <YAxis stroke="#94A3B8" fontSize={12} unit="%" tickLine={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                                            <XAxis dataKey="time" stroke={axisStroke} fontSize={12} tickLine={false} />
+                                            <YAxis stroke={axisStroke} fontSize={12} unit="%" tickLine={false} />
                                             <Tooltip content={(props) => renderCustomTooltip({ ...props, unit: "%" })} />
                                             <Line type="monotone" dataKey="value" name="Error Rate" stroke="#EF4444" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
                                         </LineChart>
@@ -392,9 +403,9 @@ export default function ObservabilityPage() {
                                 <div style={{ width: "100%", height: 260 }}>
                                     <ResponsiveContainer>
                                         <LineChart data={metrics.p95Latency} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickLine={false} />
-                                            <YAxis stroke="#94A3B8" fontSize={12} unit=" ms" tickLine={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                                            <XAxis dataKey="time" stroke={axisStroke} fontSize={12} tickLine={false} />
+                                            <YAxis stroke={axisStroke} fontSize={12} unit=" ms" tickLine={false} />
                                             <Tooltip content={(props) => renderCustomTooltip({ ...props, unit: "ms" })} />
                                             <Line type="monotone" dataKey="value" name="P95 Latency" stroke="#F59E0B" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
                                         </LineChart>
@@ -417,9 +428,9 @@ export default function ObservabilityPage() {
                                 <div style={{ width: "100%", height: 260 }}>
                                     <ResponsiveContainer>
                                         <LineChart data={metrics.network} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickLine={false} />
-                                            <YAxis stroke="#94A3B8" fontSize={12} unit=" KB/s" tickLine={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                                            <XAxis dataKey="time" stroke={axisStroke} fontSize={12} tickLine={false} />
+                                            <YAxis stroke={axisStroke} fontSize={12} unit=" KB/s" tickLine={false} />
                                             <Tooltip content={(props) => renderCustomTooltip({ ...props, unit: "KB/s" })} />
                                             <Legend verticalAlign="top" height={36} />
                                             <Line type="monotone" dataKey="rx" name="Receive (Rx)" stroke="#06B6D4" strokeWidth={2} dot={false} />

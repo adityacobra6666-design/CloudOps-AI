@@ -1,4 +1,5 @@
 import React from "react";
+import ThemeToggle from "./ThemeToggle";
 
 export default function Header({ mobileOpen, setMobileOpen, title, lastUpdated, onRefresh }) {
     return (
@@ -31,7 +32,9 @@ export default function Header({ mobileOpen, setMobileOpen, title, lastUpdated, 
                         🔄 Refresh
                     </button>
                 )}
+                <ThemeToggle />
             </div>
         </header>
     );
 }
+

@@ -1,6 +1,6 @@
 /* =========================================
    CLOUDOPS AI — AUTHENTICATION & LOGIN STYLES
-   THEME: WHITE + SKY BLUE + DARK NAVY
+   THEME SUPPORT: LIGHT & DARK MODE
 ========================================= */
 
 .app-content {
@@ -23,7 +23,8 @@
     padding: 2rem 1rem;
     position: relative;
     z-index: 10;
-    background: #F5F9FC;
+    background: var(--bg-main, #F5F9FC);
+    transition: background-color 0.25s ease;
 }
 
 /* =========================================
@@ -33,16 +34,16 @@
 .auth-card {
     width: 100%;
     max-width: 440px;
-    background: #FFFFFF;
-    border: 1px solid #DCE6EF;
+    background: var(--bg-card, #FFFFFF);
+    border: 1px solid var(--border-color, #DCE6EF);
     border-radius: 18px;
     padding: 2.5rem 2rem;
-    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    box-shadow: var(--shadow-lg, 0 10px 30px rgba(15, 23, 42, 0.08));
     display: flex;
     flex-direction: column;
     align-items: center;
     position: relative;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.25s ease, border-color 0.25s ease;
 }
 
 .auth-card.register-card {
@@ -81,15 +82,17 @@
 .auth-header h1 {
     font-size: 1.75rem;
     font-weight: 800;
-    color: #0F172A;
+    color: var(--color-text-main, #0F172A);
     margin: 0 0 0.4rem 0;
     letter-spacing: -0.02em;
+    transition: color 0.25s ease;
 }
 
 .auth-header p {
     font-size: 0.9rem;
-    color: #64748B;
+    color: var(--color-text-muted, #64748B);
     margin: 0;
+    transition: color 0.25s ease;
 }
 
 /* =========================================
@@ -98,11 +101,11 @@
 
 .auth-error {
     width: 100%;
-    background: #FEE2E2;
-    border: 1px solid #FCA5A5;
+    background: var(--color-critical-bg, #FEE2E2);
+    border: 1px solid var(--color-critical-border, #FCA5A5);
     border-radius: 10px;
     padding: 10px 14px;
-    color: #B91C1C;
+    color: var(--color-critical, #B91C1C);
     font-size: 0.85rem;
     font-weight: 600;
     display: flex;
@@ -113,11 +116,11 @@
 
 .auth-success {
     width: 100%;
-    background: #DCFCE7;
-    border: 1px solid #86EFAC;
+    background: var(--color-healthy-bg, #DCFCE7);
+    border: 1px solid var(--color-healthy-border, #86EFAC);
     border-radius: 10px;
     padding: 10px 14px;
-    color: #15803D;
+    color: var(--color-healthy, #15803D);
     font-size: 0.85rem;
     font-weight: 600;
     display: flex;
@@ -147,41 +150,42 @@
 .form-group label {
     font-size: 0.85rem;
     font-weight: 700;
-    color: #0F172A;
+    color: var(--color-text-main, #0F172A);
+    transition: color 0.25s ease;
 }
 
 .form-group input,
 .form-group select {
     width: 100%;
-    background: #FFFFFF;
-    border: 1px solid #DCE6EF;
+    background: var(--input-bg, #FFFFFF);
+    border: 1px solid var(--input-border, #DCE6EF);
     border-radius: 10px;
     padding: 12px 16px;
-    color: #172033;
+    color: var(--input-color, #172033);
     font-size: 0.95rem;
     font-family: inherit;
     outline: none;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.25s ease, color 0.25s ease;
 }
 
 .form-group input::placeholder {
-    color: #94A3B8;
+    color: var(--input-placeholder, #94A3B8);
 }
 
 .form-group input:focus,
 .form-group select:focus {
-    border-color: #38BDF8;
+    border-color: var(--color-sky-blue, #38BDF8);
     box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
 }
 
 .form-group select option {
-    background: #FFFFFF;
-    color: #172033;
+    background: var(--bg-card, #FFFFFF);
+    color: var(--color-text-main, #172033);
 }
 
 .input-hint {
     font-size: 0.75rem;
-    color: #64748B;
+    color: var(--color-text-muted, #64748B);
 }
 
 /* =========================================
@@ -190,7 +194,7 @@
 
 .auth-submit {
     width: 100%;
-    background: #0284C7;
+    background: var(--color-blue-primary, #0284C7);
     border: none;
     border-radius: 10px;
     padding: 13px;
@@ -241,7 +245,7 @@
     align-items: center;
     text-align: center;
     margin: 1.5rem 0;
-    color: #94A3B8;
+    color: var(--color-text-subtle, #94A3B8);
     font-size: 0.75rem;
     font-weight: 700;
     letter-spacing: 0.05em;
@@ -251,7 +255,7 @@
 .auth-divider::after {
     content: '';
     flex: 1;
-    border-bottom: 1px solid #E2E8F0;
+    border-bottom: 1px solid var(--border-color, #E2E8F0);
 }
 
 .auth-divider span {
@@ -264,14 +268,14 @@
     justify-content: center;
     gap: 8px;
     font-size: 0.88rem;
-    color: #64748B;
+    color: var(--color-text-muted, #64748B);
     margin-bottom: 1.25rem;
 }
 
 .register-link button {
     background: transparent;
     border: none;
-    color: #0284C7;
+    color: var(--color-blue-primary, #0284C7);
     font-weight: 700;
     font-size: 0.88rem;
     cursor: pointer;
@@ -294,7 +298,7 @@
     justify-content: center;
     gap: 6px;
     font-size: 0.75rem;
-    color: #94A3B8;
+    color: var(--color-text-subtle, #94A3B8);
     margin-top: 0.5rem;
 }
 
@@ -312,13 +316,14 @@
     gap: 12px;
     padding: 8px 12px;
     border-radius: 12px;
-    background: #FFFFFF;
-    border: 1px solid #DCE6EF;
-    box-shadow: 0 4px 15px rgba(15, 23, 42, 0.08);
+    background: var(--bg-card, #FFFFFF);
+    border: 1px solid var(--border-color, #DCE6EF);
+    box-shadow: var(--shadow-sm, 0 4px 15px rgba(15, 23, 42, 0.08));
+    transition: background-color 0.25s ease, border-color 0.25s ease;
 }
 
 .auth-nav-text {
-    color: #64748B;
+    color: var(--color-text-muted, #64748B);
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
@@ -328,7 +333,7 @@
     border: 1px solid rgba(56, 189, 248, 0.4);
     border-radius: 8px;
     padding: 8px 14px;
-    background: #0284C7;
+    background: var(--color-blue-primary, #0284C7);
     color: white;
     font-size: 13px;
     font-weight: 600;

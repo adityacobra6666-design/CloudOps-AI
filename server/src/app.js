@@ -1,6 +1,10 @@
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const client = require("prom-client");
+const mongoose = require("mongoose");
 
 // Routes
 const incidentRoutes = require("./routes/incident.route");
@@ -41,16 +45,53 @@ register.registerMetric(httpRequestsTotal);
 register.registerMetric(httpRequestDuration);
 
 // ======================================================
-// MIDDLEWARE
+// SECURITY & ESSENTIAL MIDDLEWARE
 // ======================================================
 
+app.use(helmet());
+app.use(cookieParser());
+
+// Build allowed origins from CORS_ORIGINS env var + sensible defaults
+const corsOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+const allowedOrigins = [
+    ...corsOrigins,
+    process.env.CLIENT_URL,
+    // Development defaults (only when no explicit CORS_ORIGINS is set)
+    ...(!process.env.CORS_ORIGINS ? [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000"
+    ] : [])
+].filter(Boolean);
+
 app.use(cors({
-    origin: true,
+    origin: (origin, callback) => {
+        // Allow requests with no origin (server-to-server, Prometheus scraping, curl)
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error(`CORS: Origin ${origin} is not allowed`));
+        }
+    },
     credentials: true
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+// Global API Rate Limiter
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: "Too many requests from this IP, please try again later." }
+});
+
+app.use("/api/", apiLimiter);
 
 // HTTP METRICS MIDDLEWARE
 app.use((req, res, next) => {
@@ -71,7 +112,7 @@ app.use((req, res, next) => {
 });
 
 // ======================================================
-// HEALTH CHECK & SIMULATED FAILURE
+// ROOT ENDPOINT
 // ======================================================
 
 app.get("/", (req, res) => {
@@ -81,12 +122,58 @@ app.get("/", (req, res) => {
     });
 });
 
-app.get("/api/test-error", (req, res) => {
-    res.status(500).json({
-        success: false,
-        message: "Simulated CloudOps failure"
+// ======================================================
+// HEALTH CHECK (with real dependency status)
+// ======================================================
+
+app.get(["/health", "/api/health"], async (req, res) => {
+    const axios = require("axios");
+    const PROMETHEUS_URL = process.env.PROMETHEUS_URL || "http://prometheus:9090";
+    const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
+
+    const isDbHealthy = mongoose.connection.readyState === 1;
+
+    let isPrometheusHealthy = false;
+    let isOllamaHealthy = false;
+
+    await Promise.allSettled([
+        axios.get(`${PROMETHEUS_URL}/-/healthy`, { timeout: 1500 })
+            .then(() => { isPrometheusHealthy = true; }).catch(() => {}),
+        axios.get(`${OLLAMA_URL}/api/version`, { timeout: 1500 })
+            .then(() => { isOllamaHealthy = true; }).catch(() => {})
+    ]);
+
+    const status = isDbHealthy ? "healthy" : "unhealthy";
+    const httpStatus = isDbHealthy ? 200 : 503;
+
+    res.status(httpStatus).json({
+        success: isDbHealthy,
+        status,
+        timestamp: new Date().toISOString(),
+        dependencies: {
+            database: isDbHealthy ? "healthy" : "unhealthy",
+            prometheus: isPrometheusHealthy ? "healthy" : "unavailable",
+            ollama: isOllamaHealthy ? "healthy" : "unavailable"
+        }
     });
 });
+
+// ======================================================
+// SIMULATED FAILURE (Development Only)
+// ======================================================
+
+if (process.env.NODE_ENV !== "production") {
+    app.get("/api/test-error", (req, res) => {
+        res.status(500).json({
+            success: false,
+            message: "Simulated CloudOps failure"
+        });
+    });
+}
+
+// ======================================================
+// PROMETHEUS METRICS ENDPOINT
+// ======================================================
 
 app.get("/metrics", async (req, res) => {
     try {
@@ -110,6 +197,17 @@ app.use("/api/metrics", metricsRoutes);
 app.use("/api/reliability", reliabilityRoutes);
 app.use("/api/kubernetes", kubernetesRoutes);
 app.use("/api/observability", observabilityRoutes);
+
+// ======================================================
+// 404 NOT FOUND HANDLER (Guarantees JSON, never HTML)
+// ======================================================
+
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        message: `API endpoint not found: ${req.method} ${req.originalUrl}`
+    });
+});
 
 // ======================================================
 // ERROR HANDLER

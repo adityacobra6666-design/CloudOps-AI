@@ -1,0 +1,19 @@
+{
+  "name": "cloudops-ai",
+  "version": "1.0.0",
+  "description": "CloudOps AI — RAG-Driven Autonomous Cloud Operations & Reliability Platform",
+  "scripts": {
+    "start:all": "./scripts/start.sh",
+    "stop:all": "./scripts/stop.sh"
+  },
+  "keywords": [
+    "cloudops",
+    "aiops",
+    "kubernetes",
+    "prometheus",
+    "grafana",
+    "ollama"
+  ],
+  "author": "",
+  "license": "ISC"
+}

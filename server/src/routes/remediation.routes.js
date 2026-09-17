@@ -7,48 +7,18 @@ const {
     getAllActions
 } = require("../controllers/remediation.controller");
 
+const { protect, requireRole } = require("../middleware/auth.middleware");
 
 const router = express.Router();
 
-
 // =========================================
-// GET ALL REMEDIATION ACTIONS
+// PROTECTED REMEDIATION ROUTES (RBAC)
 // =========================================
+router.get("/actions", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getAllActions);
+router.get("/actions/:actionId", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getStatus);
+router.get("/:incidentId/history", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getHistory);
 
-router.get(
-    "/actions",
-    getAllActions
-);
-
-
-// =========================================
-// EXECUTE REMEDIATION
-// =========================================
-
-router.post(
-    "/:incidentId/execute",
-    triggerRemediation
-);
-
-
-// =========================================
-// GET REMEDIATION HISTORY FOR INCIDENT
-// =========================================
-
-router.get(
-    "/:incidentId/history",
-    getHistory
-);
-
-
-// =========================================
-// GET SINGLE REMEDIATION ACTION
-// =========================================
-
-router.get(
-    "/actions/:actionId",
-    getStatus
-);
-
+// Operational execution requires ENGINEER or ADMIN role
+router.post("/:incidentId/execute", protect, requireRole("ENGINEER", "ADMIN"), triggerRemediation);
 
 module.exports = router;

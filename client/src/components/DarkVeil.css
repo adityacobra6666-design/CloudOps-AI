@@ -6,8 +6,9 @@
     z-index: -10;
     overflow: hidden;
     pointer-events: none;
-    background: #F5F9FC;
+    background: var(--bg-main, #F5F9FC);
     opacity: 0.15;
+    transition: background 0.25s ease;
 }
 
 .darkveil-canvas canvas {

@@ -3,10 +3,10 @@ const axios = require("axios");
 const { queryPrometheus } = require("../services/remediation/verification");
 const { VERIFICATION_CONFIG } = require("../config/remediation.config");
 
-const PROMETHEUS_URL = process.env.PROMETHEUS_URL || VERIFICATION_CONFIG.prometheusUrl || "http://localhost:9090";
-const GRAFANA_URL = process.env.GRAFANA_URL || "http://localhost:3000";
-const ALERTMANAGER_URL = process.env.ALERTMANAGER_URL || "http://localhost:9093";
-const OLLAMA_URL = process.env.OLLAMA_HOST || "http://localhost:11434";
+const PROMETHEUS_URL = process.env.PROMETHEUS_URL || VERIFICATION_CONFIG.prometheusUrl || "http://prometheus:9090";
+const GRAFANA_URL = process.env.GRAFANA_URL || "http://grafana:3000";
+const ALERTMANAGER_URL = process.env.ALERTMANAGER_URL || "http://alertmanager:9093";
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 
 // =========================================
 // GET OVERVIEW METRICS
@@ -86,7 +86,7 @@ exports.getOverviewMetrics = async (req, res) => {
 // =========================================
 exports.getServicesHealth = async (req, res) => {
     const services = [
-        { name: "Backend", status: "Healthy", url: "http://localhost:5000" },
+        { name: "Backend", status: "Healthy" },
         { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Healthy" : "Critical" },
         { name: "Prometheus", status: "Degraded", url: PROMETHEUS_URL },
         { name: "Grafana", status: "Degraded", url: GRAFANA_URL },

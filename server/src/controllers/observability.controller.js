@@ -5,7 +5,7 @@ const { kubernetesService } = require("../services/kubernetes/kubernetes.service
 
 const GRAFANA_URL = process.env.GRAFANA_URL || "http://grafana:3000";
 const ALERTMANAGER_URL = process.env.ALERTMANAGER_URL || "http://alertmanager:9093";
-const OLLAMA_URL = process.env.OLLAMA_HOST || "http://ollama:11434";
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 
 /**
  * Range parameter helper
@@ -73,17 +73,17 @@ exports.getTelemetry = async (req, res) => {
         // PromQL queries
         const qCpuInstant = `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`;
         const qMemInstant = `100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))`;
-        const qReqRateInstant = `sum(rate(cloudops_http_requests_total[1m]))`;
-        const qErrRateInstant = `(sum(rate(cloudops_http_requests_total{status_code=~"5.."}[1m])) / clamp_min(sum(rate(cloudops_http_requests_total[1m])), 0.001)) * 100`;
-        const qP95LatencyInstant = `histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) * 1000`;
+        const qReqRateInstant = `sum(rate(cloudops_http_requests_total[1m])) or vector(0)`;
+        const qErrRateInstant = `((sum(rate(cloudops_http_requests_total{status_code=~"5.."}[1m])) or vector(0)) / clamp_min(sum(rate(cloudops_http_requests_total[1m])) or vector(0.001), 0.001)) * 100`;
+        const qP95LatencyInstant = `(histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) or vector(0)) * 1000`;
         const qNetRxInstant = `sum(rate(container_network_receive_bytes_total{name=~".+"}[1m])) / 1024`;
         const qNetTxInstant = `sum(rate(container_network_transmit_bytes_total{name=~".+"}[1m])) / 1024`;
 
         const qCpuRange = `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`;
         const qMemRange = `100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))`;
-        const qReqRateRange = `sum(rate(cloudops_http_requests_total[2m]))`;
-        const qErrRateRange = `(sum(rate(cloudops_http_requests_total{status_code=~"5.."}[2m])) / clamp_min(sum(rate(cloudops_http_requests_total[2m])), 0.001)) * 100`;
-        const qP95LatencyRange = `histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) * 1000`;
+        const qReqRateRange = `sum(rate(cloudops_http_requests_total[2m])) or vector(0)`;
+        const qErrRateRange = `((sum(rate(cloudops_http_requests_total{status_code=~"5.."}[2m])) or vector(0)) / clamp_min(sum(rate(cloudops_http_requests_total[2m])) or vector(0.001), 0.001)) * 100`;
+        const qP95LatencyRange = `(histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) or vector(0)) * 1000`;
         const qNetRxRange = `sum(rate(container_network_receive_bytes_total{name=~".+"}[1m])) / 1024`;
         const qNetTxRange = `sum(rate(container_network_transmit_bytes_total{name=~".+"}[1m])) / 1024`;
 
@@ -139,7 +139,20 @@ exports.getTelemetry = async (req, res) => {
                 .catch(() => { services.find(s => s.name === "Kubernetes").status = "Critical"; })
         ]);
 
-        const totalNetVal = (netRxVal || 0) + (netTxVal || 0);
+        // Safe number helper to prevent NaN crashes
+        const safe = (val, fallback = 0) => {
+            const n = parseFloat(val);
+            return isNaN(n) || !isFinite(n) ? fallback : n;
+        };
+
+        const safeCpu = safe(cpuVal);
+        const safeMem = safe(memVal);
+        const safeReqRate = safe(reqRateVal);
+        const safeErrRate = safe(errRateVal);
+        const safeP95 = safe(p95Val);
+        const safeNetRx = safe(netRxVal);
+        const safeNetTx = safe(netTxVal);
+        const totalNetVal = safeNetRx + safeNetTx;
 
         res.json({
             success: true,
@@ -148,35 +161,35 @@ exports.getTelemetry = async (req, res) => {
             timestamp: new Date().toISOString(),
             summary: {
                 cpu: {
-                    value: parseFloat(cpuVal.toFixed(1)),
+                    value: parseFloat(safeCpu.toFixed(1)),
                     unit: "%",
-                    status: cpuVal > 85 ? "Critical" : cpuVal > 70 ? "Warning" : "Healthy"
+                    status: safeCpu > 85 ? "Critical" : safeCpu > 70 ? "Warning" : "Healthy"
                 },
                 memory: {
-                    value: parseFloat(memVal.toFixed(1)),
+                    value: parseFloat(safeMem.toFixed(1)),
                     unit: "%",
-                    status: memVal > 90 ? "Critical" : memVal > 75 ? "Warning" : "Healthy"
+                    status: safeMem > 90 ? "Critical" : safeMem > 75 ? "Warning" : "Healthy"
                 },
                 requestRate: {
-                    value: parseFloat(reqRateVal.toFixed(2)),
+                    value: parseFloat(safeReqRate.toFixed(2)),
                     unit: "req/s",
                     status: "Healthy"
                 },
                 errorRate: {
-                    value: parseFloat(errRateVal.toFixed(2)),
+                    value: parseFloat(safeErrRate.toFixed(2)),
                     unit: "%",
-                    status: errRateVal > 5 ? "Critical" : errRateVal > 1 ? "Warning" : "Healthy"
+                    status: safeErrRate > 5 ? "Critical" : safeErrRate > 1 ? "Warning" : "Healthy"
                 },
                 p95Latency: {
-                    value: Math.round(p95Val),
+                    value: Math.round(safeP95),
                     unit: "ms",
-                    status: p95Val > 500 ? "Critical" : p95Val > 200 ? "Warning" : "Healthy"
+                    status: safeP95 > 500 ? "Critical" : safeP95 > 200 ? "Warning" : "Healthy"
                 },
                 network: {
                     value: totalNetVal > 1024 ? parseFloat((totalNetVal / 1024).toFixed(2)) : parseFloat(totalNetVal.toFixed(1)),
                     unit: totalNetVal > 1024 ? "MB/s" : "KB/s",
-                    rx: parseFloat(netRxVal.toFixed(1)),
-                    tx: parseFloat(netTxVal.toFixed(1)),
+                    rx: parseFloat(safeNetRx.toFixed(1)),
+                    tx: parseFloat(safeNetTx.toFixed(1)),
                     status: "Healthy"
                 }
             },
