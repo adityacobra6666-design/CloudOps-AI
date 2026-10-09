@@ -58,6 +58,18 @@ const incidentSchema = new mongoose.Schema({
         default: null
     },
 
+    connectionId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "InfrastructureConnection",
+        default: null,
+        index: true
+    },
+
+    environment: {
+        type: String,
+        default: null
+    },
+
     // =========================================
     // PROMETHEUS / ALERTMANAGER DEDUPLICATION
     // =========================================

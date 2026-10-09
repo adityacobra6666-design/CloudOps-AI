@@ -86,6 +86,7 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$ROOT_DIR"
 docker compose up -d
+docker network connect minikube cloudops-server 2>/dev/null || true
 
 # 6. WAIT FOR BACKEND & SERVICES TO BECOME HEALTHY
 echo -e "\n${YELLOW}[CloudOps] Waiting for backend server to respond...${NC}"

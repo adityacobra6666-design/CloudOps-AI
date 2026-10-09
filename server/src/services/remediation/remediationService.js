@@ -116,6 +116,7 @@ async function executeRemediation(incidentId) {
     // Create the remediation action record
     const actionRecord = await RemediationAction.create({
         incident: incident._id,
+        connection: incident.connectionId || null,
         action: decision.action,
         target: decision.target,
         reason: decision.reason,
@@ -182,7 +183,10 @@ async function executeRemediation(incidentId) {
     );
 
 
-    const executor = createExecutor();
+    const executorContext = { incident, beforeValue, connectionId: incident.connectionId };
+    const executor = createExecutor(undefined, executorContext);
+    actionRecord.executor = executor.getName();
+    await actionRecord.save();
 
     let executionResult;
 
@@ -191,7 +195,7 @@ async function executeRemediation(incidentId) {
         executionResult = await executor.execute(
             decision.action,
             decision.target,
-            { incident, beforeValue }
+            executorContext
         );
 
 

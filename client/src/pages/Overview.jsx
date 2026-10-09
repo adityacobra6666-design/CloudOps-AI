@@ -51,8 +51,10 @@ export default function Overview() {
         <div className="page-container">
             <Header
                 title="Operations Overview"
+                subtitle="Unified AIOps control plane monitoring real-time telemetry, incidents, and autonomous remediations."
                 lastUpdated={lastUpdated}
                 onRefresh={handleRefreshAll}
+                refreshing={metricsLoading}
             />
 
             {/* SYSTEM STATUS BANNER */}
@@ -65,8 +67,20 @@ export default function Overview() {
                         CloudOps AI is actively monitoring system health & infrastructure parameters
                     </span>
                 </div>
-                <button type="button" className="btn-secondary" onClick={handleRefreshAll}>
-                    ⚡ Sync Live Telemetry
+                <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleRefreshAll}
+                    disabled={metricsLoading}
+                >
+                    {metricsLoading ? (
+                        <>
+                            <span className="btn-spinner" />
+                            Syncing...
+                        </>
+                    ) : (
+                        "⚡ Sync Live Telemetry"
+                    )}
                 </button>
             </div>
 

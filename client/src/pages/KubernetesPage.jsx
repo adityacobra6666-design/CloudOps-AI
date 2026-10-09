@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { getKubernetesOverview, executeKubernetesAction } from "../services/api";
+import { getKubernetesOverview, executeKubernetesAction, getInfrastructureConnections } from "../services/api";
 import Header from "../components/Header";
+import { ModalPortal } from "../components/Modal";
 
 export default function KubernetesPage() {
     const [k8sData, setK8sData] = useState(null);
+    const [selectedEnvironment, setSelectedEnvironment] = useState("local");
+    const [availableConnections, setAvailableConnections] = useState([]);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
     const [errorMsg, setErrorMsg] = useState(null);
@@ -17,11 +20,27 @@ export default function KubernetesPage() {
     // Modal state for restart confirmation
     const [restartModalOpen, setRestartModalOpen] = useState(false);
 
-    const fetchK8s = async () => {
+    // Audit detail modal
+    const [selectedAuditDetail, setSelectedAuditDetail] = useState(null);
+
+    // Load available connections
+    useEffect(() => {
+        const loadConnections = async () => {
+            try {
+                const res = await getInfrastructureConnections();
+                if (res.success) {
+                    setAvailableConnections(res.connections || []);
+                }
+            } catch (e) {}
+        };
+        loadConnections();
+    }, []);
+
+    const fetchK8s = async (connId = selectedEnvironment) => {
         try {
             setLoading(true);
             setErrorMsg(null);
-            const data = await getKubernetesOverview();
+            const data = await getKubernetesOverview(undefined, connId);
             setK8sData(data);
         } catch (err) {
             console.error("K8s fetch error:", err);
@@ -32,10 +51,10 @@ export default function KubernetesPage() {
     };
 
     useEffect(() => {
-        fetchK8s();
-        const interval = setInterval(fetchK8s, 10000);
+        fetchK8s(selectedEnvironment);
+        const interval = setInterval(() => fetchK8s(selectedEnvironment), 10000);
         return () => clearInterval(interval);
-    }, []);
+    }, [selectedEnvironment]);
 
     const handleScaleSubmit = async (e) => {
         e.preventDefault();
@@ -51,12 +70,13 @@ export default function KubernetesPage() {
                 target: targetDeployment.name,
                 namespace: targetDeployment.namespace,
                 replicas: Number(desiredReplicas),
+                connectionId: selectedEnvironment !== "local" ? selectedEnvironment : undefined,
                 reason: `Manual scaling via UI to ${desiredReplicas} replicas`
             });
 
             setSuccessMsg(res.message || `Successfully scaled ${targetDeployment.name} to ${desiredReplicas} replicas.`);
             setScaleModalOpen(false);
-            fetchK8s();
+            fetchK8s(selectedEnvironment);
         } catch (err) {
             setErrorMsg(err.message || "Scale action failed");
         } finally {
@@ -76,12 +96,13 @@ export default function KubernetesPage() {
                 action: "RESTART_SERVICE",
                 target: targetDeployment.name,
                 namespace: targetDeployment.namespace,
+                connectionId: selectedEnvironment !== "local" ? selectedEnvironment : undefined,
                 reason: `Manual rolling restart via UI`
             });
 
             setSuccessMsg(res.message || `Rolling restart initiated for ${targetDeployment.name}.`);
             setRestartModalOpen(false);
-            fetchK8s();
+            fetchK8s(selectedEnvironment);
         } catch (err) {
             setErrorMsg(err.message || "Restart action failed");
         } finally {
@@ -93,8 +114,31 @@ export default function KubernetesPage() {
         <div className="page-container">
             <Header
                 title="Kubernetes Cluster Control Center"
-                onRefresh={fetchK8s}
+                onRefresh={() => fetchK8s(selectedEnvironment)}
             />
+
+            {/* ENVIRONMENT SELECTOR BAR */}
+            <div className="environment-control-bar">
+                <div className="environment-label-group">
+                    <span className="environment-label">Active Cluster Environment:</span>
+                    <select
+                        className="form-select"
+                        value={selectedEnvironment}
+                        onChange={(e) => setSelectedEnvironment(e.target.value)}
+                        aria-label="Active Cluster Environment"
+                    >
+                        <option value="local">💻 Local Cluster (Minikube / Kind)</option>
+                        {availableConnections.map((c) => (
+                            <option key={c._id} value={c._id}>
+                                🌐 {c.name} ({c.status})
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>
+                    {selectedEnvironment === "local" ? "Direct Kubeconfig Integration" : "Connected Agent Outbound Channel"}
+                </span>
+            </div>
 
             {/* Notification Badges */}
             {errorMsg && (
@@ -369,33 +413,52 @@ export default function KubernetesPage() {
                                     </thead>
                                     <tbody>
                                         {k8sData.recentActions && k8sData.recentActions.length > 0 ? (
-                                            k8sData.recentActions.map((act) => (
-                                                <tr key={act._id}>
-                                                    <td><strong>{act.action}</strong></td>
-                                                    <td><code>{act.target}</code></td>
-                                                    <td>{act.triggeredBy}</td>
-                                                    <td>
-                                                        <span className={`status-pill ${act.policy?.approved ? "success" : "danger"}`}>
-                                                            {act.policy?.approved ? "APPROVED" : "REJECTED"}
-                                                        </span>
-                                                    </td>
-                                                    <td>
-                                                        <span className={`status-pill ${act.status === "SUCCESS" ? "success" : act.status === "FAILED" ? "danger" : "warning"}`}>
-                                                            {act.status}
-                                                        </span>
-                                                    </td>
-                                                    <td>
-                                                        {act.verification ? (
-                                                            <span style={{ fontSize: "0.85rem", color: act.verification.passed || act.verification.status === "SUCCESS" ? "#0284c7" : "#dc2626" }}>
-                                                                {act.verification.passed || act.verification.status === "SUCCESS" ? "✓ Verified" : "❌ Failed"} ({act.verification.metric || "Convergence"})
+                                            k8sData.recentActions.map((act) => {
+                                                const isPolicyApproved = act.policy?.approved;
+                                                const execStatus = act.status;
+                                                const isVerified = act.verification?.passed || act.verification?.status === "SUCCESS" || act.verification?.status === "VERIFIED";
+                                                const isVerificationFailed = act.verification?.status === "FAILED";
+                                                const hasDetails = act.error || act.notes || act.verification?.details || act.policy?.reason;
+
+                                                return (
+                                                    <tr key={act._id}>
+                                                        <td style={{ whiteSpace: "nowrap" }}>
+                                                            <strong style={{ color: "var(--color-blue-primary)" }}>{act.action}</strong>
+                                                        </td>
+                                                        <td><code>{act.target}</code></td>
+                                                        <td className="text-muted">{act.triggeredBy || "SYSTEM"}</td>
+                                                        <td>
+                                                            <span className={`status-pill compact-pill ${isPolicyApproved ? "success" : "danger"}`}>
+                                                                {isPolicyApproved ? "APPROVED" : "REJECTED"}
                                                             </span>
-                                                        ) : (
-                                                            <span className="text-muted">N/A</span>
-                                                        )}
-                                                    </td>
-                                                    <td className="text-muted">{new Date(act.createdAt).toLocaleTimeString()}</td>
-                                                </tr>
-                                            ))
+                                                        </td>
+                                                        <td>
+                                                            <span className={`status-pill compact-pill ${execStatus === "SUCCESS" || execStatus === "SUCCEEDED" ? "success" : execStatus === "FAILED" ? "danger" : execStatus === "RUNNING" || execStatus === "PENDING" ? "running" : "neutral"}`}>
+                                                                {execStatus}
+                                                            </span>
+                                                        </td>
+                                                        <td>
+                                                            <span className={`status-pill compact-pill ${isVerified ? "info" : isVerificationFailed ? "danger" : "neutral"}`}>
+                                                                {isVerified ? "VERIFIED" : isVerificationFailed ? "FAILED" : "UNVERIFIED"}
+                                                            </span>
+                                                            {hasDetails && (
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-secondary btn-xs"
+                                                                    style={{ marginLeft: "6px" }}
+                                                                    onClick={() => setSelectedAuditDetail(act)}
+                                                                    title="View Details"
+                                                                >
+                                                                    Details
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                        <td className="text-muted" style={{ whiteSpace: "nowrap" }}>
+                                                            {new Date(act.createdAt).toLocaleTimeString()}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
                                         ) : (
                                             <tr>
                                                 <td colSpan="7" className="text-muted text-center">No Kubernetes actions performed yet.</td>
@@ -411,52 +474,223 @@ export default function KubernetesPage() {
 
             {/* SCALE MODAL */}
             {scaleModalOpen && targetDeployment && (
-                <div className="modal-backdrop">
-                    <div className="modal-content ops-card">
-                        <h3>⚡ Scale Deployment</h3>
-                        <p>Adjust desired replicas for <strong>{targetDeployment.name}</strong> (Namespace: <code>{targetDeployment.namespace}</code>).</p>
-                        <form onSubmit={handleScaleSubmit}>
-                            <div className="form-group" style={{ margin: "16px 0" }}>
-                                <label style={{ display: "block", fontWeight: 600, marginBottom: "6px" }}>Desired Replicas (1 - 10):</label>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    max="10"
-                                    value={desiredReplicas}
-                                    onChange={(e) => setDesiredReplicas(e.target.value)}
-                                    className="form-control"
-                                    style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #cbd5e1" }}
-                                    required
-                                />
-                            </div>
-                            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "20px" }}>
-                                <button type="button" className="btn btn-secondary" onClick={() => setScaleModalOpen(false)}>Cancel</button>
-                                <button type="submit" className="btn btn-primary" disabled={actionLoading}>
-                                    {actionLoading ? "Scaling..." : "Confirm Scale"}
+                <ModalPortal isOpen={scaleModalOpen} onClose={() => !actionLoading && setScaleModalOpen(false)}>
+                    <div
+                        className="modal-backdrop"
+                        onClick={() => !actionLoading && setScaleModalOpen(false)}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="scale-modal-title"
+                    >
+                        <div className="modal-content" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <div className="modal-title-wrap">
+                                    <h3 id="scale-modal-title" className="modal-title">Scale {targetDeployment.name}</h3>
+                                    <p className="modal-subtitle">
+                                        Current replicas: <strong>{targetDeployment.ready ?? targetDeployment.desired ?? 1}</strong>
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="modal-close-btn"
+                                    onClick={() => setScaleModalOpen(false)}
+                                    disabled={actionLoading}
+                                    aria-label="Close dialog"
+                                >
+                                    ✕
                                 </button>
                             </div>
-                        </form>
+                            <form onSubmit={handleScaleSubmit}>
+                                <div className="modal-body">
+                                    <div className="form-group" style={{ marginBottom: 0 }}>
+                                        <label className="form-label">Desired replicas:</label>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            max="10"
+                                            value={desiredReplicas}
+                                            onChange={(e) => setDesiredReplicas(e.target.value)}
+                                            className="form-input"
+                                            required
+                                            disabled={actionLoading}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="modal-footer">
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={() => setScaleModalOpen(false)}
+                                        disabled={actionLoading}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        className="btn btn-primary"
+                                        disabled={actionLoading}
+                                    >
+                                        {actionLoading ? (
+                                            <>
+                                                <span className="btn-spinner" />
+                                                Scaling...
+                                            </>
+                                        ) : (
+                                            "Confirm Scale"
+                                        )}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
-                </div>
+                </ModalPortal>
             )}
 
             {/* RESTART MODAL */}
             {restartModalOpen && targetDeployment && (
-                <div className="modal-backdrop">
-                    <div className="modal-content ops-card">
-                        <h3>🔄 Confirm Rolling Restart</h3>
-                        <p>Are you sure you want to perform a rolling restart on deployment <strong>{targetDeployment.name}</strong> in namespace <code>{targetDeployment.namespace}</code>?</p>
-                        <p className="text-muted" style={{ fontSize: "0.9rem", marginTop: "8px" }}>
-                            Kubernetes will gracefully cycle all running pod replicas without causing service downtime.
-                        </p>
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "24px" }}>
-                            <button type="button" className="btn btn-secondary" onClick={() => setRestartModalOpen(false)}>Cancel</button>
-                            <button type="button" className="btn btn-danger" disabled={actionLoading} onClick={handleRestartSubmit}>
-                                {actionLoading ? "Restarting..." : "Confirm Restart"}
-                            </button>
+                <ModalPortal isOpen={restartModalOpen} onClose={() => !actionLoading && setRestartModalOpen(false)}>
+                    <div
+                        className="modal-backdrop"
+                        onClick={() => !actionLoading && setRestartModalOpen(false)}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="restart-modal-title"
+                    >
+                        <div className="modal-content" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <div className="modal-title-wrap">
+                                    <h3 id="restart-modal-title" className="modal-title">Restart {targetDeployment.name}?</h3>
+                                    <p className="modal-subtitle">
+                                        Namespace: <code>{targetDeployment.namespace}</code>
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="modal-close-btn"
+                                    onClick={() => setRestartModalOpen(false)}
+                                    disabled={actionLoading}
+                                    aria-label="Close dialog"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            <div className="modal-body">
+                                <p style={{ margin: 0, color: "var(--color-text-main)", fontSize: "0.88rem", lineHeight: 1.5 }}>
+                                    This action will restart the deployment pods.
+                                </p>
+                            </div>
+                            <div className="modal-footer">
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={() => setRestartModalOpen(false)}
+                                    disabled={actionLoading}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-danger"
+                                    disabled={actionLoading}
+                                    onClick={handleRestartSubmit}
+                                >
+                                    {actionLoading ? (
+                                        <>
+                                            <span className="btn-spinner" />
+                                            Restarting...
+                                        </>
+                                    ) : (
+                                        "Restart"
+                                    )}
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
+                </ModalPortal>
+            )}
+
+            {/* AUDIT DETAIL MODAL */}
+            {selectedAuditDetail && (
+                <ModalPortal isOpen={Boolean(selectedAuditDetail)} onClose={() => setSelectedAuditDetail(null)}>
+                    <div
+                        className="modal-backdrop"
+                        onClick={() => setSelectedAuditDetail(null)}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="audit-modal-title"
+                    >
+                        <div className="modal-content" style={{ maxWidth: "560px" }} onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <div className="modal-title-wrap">
+                                    <h3 id="audit-modal-title" className="modal-title">
+                                        Audit Details: {selectedAuditDetail.action}
+                                    </h3>
+                                    <p className="modal-subtitle">
+                                        Target: <code>{selectedAuditDetail.target}</code> • {new Date(selectedAuditDetail.createdAt).toLocaleTimeString()}
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="modal-close-btn"
+                                    onClick={() => setSelectedAuditDetail(null)}
+                                    aria-label="Close dialog"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                                    <div style={{ background: "var(--bg-card-secondary)", padding: "8px 12px", borderRadius: "6px" }}>
+                                        <span style={{ display: "block", fontSize: "0.72rem", color: "var(--color-text-muted)", textTransform: "uppercase" }}>Execution</span>
+                                        <span style={{ fontWeight: "700", fontSize: "0.9rem" }}>{selectedAuditDetail.status}</span>
+                                    </div>
+                                    <div style={{ background: "var(--bg-card-secondary)", padding: "8px 12px", borderRadius: "6px" }}>
+                                        <span style={{ display: "block", fontSize: "0.72rem", color: "var(--color-text-muted)", textTransform: "uppercase" }}>Verification</span>
+                                        <span style={{ fontWeight: "700", fontSize: "0.9rem" }}>
+                                            {selectedAuditDetail.verification?.status || (selectedAuditDetail.verification?.passed ? "VERIFIED" : "UNVERIFIED")}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {selectedAuditDetail.error && (
+                                    <div style={{
+                                        padding: "10px 12px",
+                                        backgroundColor: "var(--color-critical-bg)",
+                                        border: "1px solid var(--border-red)",
+                                        borderRadius: "6px",
+                                        color: "var(--color-critical)",
+                                        fontSize: "0.82rem",
+                                        fontFamily: "monospace",
+                                        wordBreak: "break-word"
+                                    }}>
+                                        <strong>Error:</strong> {selectedAuditDetail.error}
+                                    </div>
+                                )}
+
+                                {selectedAuditDetail.verification?.details && (
+                                    <div style={{ fontSize: "0.84rem", color: "var(--color-text-main)" }}>
+                                        <strong>Verification Info:</strong> {selectedAuditDetail.verification.details}
+                                    </div>
+                                )}
+
+                                {selectedAuditDetail.policy?.reason && (
+                                    <div style={{ fontSize: "0.84rem", color: "var(--color-text-muted)" }}>
+                                        <strong>Policy:</strong> {selectedAuditDetail.policy.reason}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="modal-footer">
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={() => setSelectedAuditDetail(null)}
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </ModalPortal>
             )}
         </div>
     );

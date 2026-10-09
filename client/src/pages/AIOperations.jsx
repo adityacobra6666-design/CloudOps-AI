@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { getAllRemediationActions } from "../services/api";
 import Header from "../components/Header";
+import { ModalPortal } from "../components/Modal";
 
 export default function AIOperations() {
     const [actions, setActions] = useState([]);
@@ -27,6 +28,16 @@ export default function AIOperations() {
         const interval = setInterval(fetchActions, 5000);
         return () => clearInterval(interval);
     }, []);
+
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === "Escape" && selectedAction) {
+                setSelectedAction(null);
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [selectedAction]);
 
     const successfulCount = actions.filter(a => a.status === "SUCCESS").length;
     const failedCount = actions.filter(a => a.status === "FAILED" || a.status === "UNVERIFIED").length;
@@ -177,44 +188,59 @@ export default function AIOperations() {
 
             {/* ACTION INSPECTION MODAL */}
             {selectedAction && (
-                <div className="modal-overlay" onClick={() => setSelectedAction(null)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>AI Remediation Audit Detail</h3>
-                            <button type="button" className="close-btn" onClick={() => setSelectedAction(null)}>✕</button>
-                        </div>
-                        <div className="modal-body">
-                            {selectedAction.incident && typeof selectedAction.incident === "object" && (
-                                <div className="detail-row">
-                                    <span className="lbl">Incident:</span>
-                                    <strong>{selectedAction.incident.title}</strong> ({selectedAction.incident.severity})
-                                </div>
-                            )}
-                            <div className="detail-row"><span className="lbl">Action:</span> <strong>{selectedAction.action}</strong></div>
-                            <div className="detail-row"><span className="lbl">Target Service:</span> <code>{selectedAction.target}</code></div>
-                            <div className="detail-row"><span className="lbl">Triggered By:</span> {selectedAction.triggeredBy || "CloudOps AI"}</div>
-                            <div className="detail-row"><span className="lbl">Reason:</span> {selectedAction.reason}</div>
-                            <div className="detail-row"><span className="lbl">Status:</span> <span className={`status-pill ${selectedAction.status?.toLowerCase()}`}>{selectedAction.status}</span></div>
-                            <div className="detail-row">
-                                <span className="lbl">Policy Check:</span>
-                                <span>{selectedAction.policy?.approved ? "Approved" : "Rejected"}{selectedAction.policy?.reason ? ` - ${selectedAction.policy.reason}` : ""}</span>
+                <ModalPortal isOpen={Boolean(selectedAction)} onClose={() => setSelectedAction(null)}>
+                    <div
+                        className="modal-backdrop"
+                        onClick={() => setSelectedAction(null)}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="audit-modal-title"
+                    >
+                        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <h3 id="audit-modal-title" className="modal-title">AI Remediation Audit Detail</h3>
+                                <button
+                                    type="button"
+                                    className="modal-close-btn"
+                                    onClick={() => setSelectedAction(null)}
+                                    aria-label="Close dialog"
+                                >
+                                    ✕
+                                </button>
                             </div>
-                            {selectedAction.result && (
-                                <div className="detail-row"><span className="lbl">Execution Result:</span> {selectedAction.result}</div>
-                            )}
-                            {selectedAction.error && (
-                                <div className="detail-row"><span className="lbl">Execution Error:</span> <span style={{ color: "#ef4444" }}>{selectedAction.error}</span></div>
-                            )}
-                            {selectedAction.verification && selectedAction.verification.message && (
-                                <div className="detail-row"><span className="lbl">Verification Telemetry:</span> {selectedAction.verification.message}</div>
-                            )}
-                            <div className="detail-row"><span className="lbl">Timestamp:</span> {new Date(selectedAction.createdAt).toLocaleString()}</div>
-                        </div>
-                        <div className="modal-footer">
-                            <button type="button" className="btn-secondary" onClick={() => setSelectedAction(null)}>Close</button>
+                            <div className="modal-body">
+                                {selectedAction.incident && typeof selectedAction.incident === "object" && (
+                                    <div className="detail-row">
+                                        <span className="lbl">Incident:</span>
+                                        <strong>{selectedAction.incident.title}</strong> ({selectedAction.incident.severity})
+                                    </div>
+                                )}
+                                <div className="detail-row"><span className="lbl">Action:</span> <strong>{selectedAction.action}</strong></div>
+                                <div className="detail-row"><span className="lbl">Target Service:</span> <code>{selectedAction.target}</code></div>
+                                <div className="detail-row"><span className="lbl">Triggered By:</span> {selectedAction.triggeredBy || "CloudOps AI"}</div>
+                                <div className="detail-row"><span className="lbl">Reason:</span> {selectedAction.reason}</div>
+                                <div className="detail-row"><span className="lbl">Status:</span> <span className={`status-pill ${selectedAction.status?.toLowerCase()}`}>{selectedAction.status}</span></div>
+                                <div className="detail-row">
+                                    <span className="lbl">Policy Check:</span>
+                                    <span>{selectedAction.policy?.approved ? "Approved" : "Rejected"}{selectedAction.policy?.reason ? ` - ${selectedAction.policy.reason}` : ""}</span>
+                                </div>
+                                {selectedAction.result && (
+                                    <div className="detail-row"><span className="lbl">Execution Result:</span> {selectedAction.result}</div>
+                                )}
+                                {selectedAction.error && (
+                                    <div className="detail-row"><span className="lbl">Execution Error:</span> <span style={{ color: "var(--color-critical)" }}>{selectedAction.error}</span></div>
+                                )}
+                                {selectedAction.verification && selectedAction.verification.message && (
+                                    <div className="detail-row"><span className="lbl">Verification Telemetry:</span> {selectedAction.verification.message}</div>
+                                )}
+                                <div className="detail-row"><span className="lbl">Timestamp:</span> {new Date(selectedAction.createdAt).toLocaleString()}</div>
+                            </div>
+                            <div className="modal-footer">
+                                <button type="button" className="btn btn-secondary" onClick={() => setSelectedAction(null)}>Close</button>
+                            </div>
                         </div>
                     </div>
-                </div>
+                </ModalPortal>
             )}
         </div>
     );

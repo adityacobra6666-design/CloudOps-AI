@@ -52,7 +52,7 @@ function ForgotPassword() {
                 {message ? (
                     <div style={{ textAlign: "center", padding: "16px 0" }}>
                         <div style={{ fontSize: "36px", marginBottom: "12px" }}>📧</div>
-                        <p style={{ color: "#38bdf8", fontSize: "0.95rem", lineHeight: "1.5", marginBottom: "20px" }}>
+                        <p style={{ color: "var(--color-blue-primary)", fontSize: "0.95rem", lineHeight: "1.5", marginBottom: "20px" }}>
                             {message}
                         </p>
                         <button

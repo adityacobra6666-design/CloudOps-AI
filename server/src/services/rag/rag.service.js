@@ -152,6 +152,12 @@ ${incident.category || "N/A"}
 Source:
 ${incident.source || "N/A"}
 
+Environment:
+${incident.environment || "Local / Cluster"}
+
+Infrastructure Target:
+${incident.server || "N/A"}
+
 
 HISTORICAL INCIDENTS
 

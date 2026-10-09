@@ -1,0 +1,18 @@
+services:
+  cloudops-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudops-agent
+    restart: unless-stopped
+    environment:
+      CLOUDOPS_URL: ${CLOUDOPS_URL:-http://host.docker.internal:5000}
+      ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN}
+      AGENT_NAME: ${AGENT_NAME:-local-cluster}
+      AGENT_ENVIRONMENT: ${AGENT_ENVIRONMENT:-development}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:9090}
+    volumes:
+      - ~/.kube:/root/.kube:ro
+      - ~/.minikube:/root/.minikube:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
+import ErrorBoundary from "./ErrorBoundary";
 
 export default function Layout() {
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -31,7 +32,9 @@ export default function Layout() {
 
             <div className="main-content-wrapper">
                 <main className="main-viewport">
-                    <Outlet context={{ user }} />
+                    <ErrorBoundary>
+                        <Outlet context={{ user, mobileOpen, setMobileOpen }} />
+                    </ErrorBoundary>
                 </main>
             </div>
         </div>

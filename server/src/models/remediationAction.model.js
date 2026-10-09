@@ -15,7 +15,15 @@ const remediationActionSchema = new mongoose.Schema(
         incident: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "Incident",
-            required: true,
+            required: false,
+            default: null,
+            index: true
+        },
+
+        connection: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "InfrastructureConnection",
+            default: null,
             index: true
         },
 
@@ -45,6 +53,16 @@ const remediationActionSchema = new mongoose.Schema(
         triggeredBy: {
             type: String,
             default: "CloudOps AI"
+        },
+
+        executor: {
+            type: String,
+            default: null
+        },
+
+        agentId: {
+            type: String,
+            default: null
         },
 
 

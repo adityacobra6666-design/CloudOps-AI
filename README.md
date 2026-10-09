@@ -269,15 +269,90 @@ node --test tests/remediation.test.js tests/control_center.test.js tests/kuberne
 
 ---
 
+---
+
+## Infrastructure Connections (Remote Agent Architecture)
+
+CloudOps AI supports two operational modes:
+
+### Operational Modes
+
+- **MODE 1: Local Development (Docker + Minikube)**
+  The control plane connects directly to the local Docker daemon and Minikube cluster running on the host system via local Kubeconfig and Docker sockets.
+- **MODE 2: Connected Infrastructure (CloudOps Agent + Customer Clusters)**
+  Users securely connect their own private Kubernetes clusters and Prometheus instances to CloudOps AI without exposing any internal APIs to the public internet.
+
+```text
++-------------------------------------------------------------------------------+
+|                       CLOUDOPS AI CONTROL PLANE                               |
+|                                                                               |
+|   React Frontend  <--->  Node/Express API  <--->  MongoDB                     |
+|                                 |                                             |
+|                     Policy Engine & RAG (Ollama)                              |
++-------------------------------------------------------------------------------+
+                                      ^
+                                      | OUTBOUND HTTPS ONLY
+                                      | (Heartbeat / Telemetry / Command Polling)
++-------------------------------------------------------------------------------+
+|                       CUSTOMER INFRASTRUCTURE                                 |
+|                                                                               |
+|   Local Prometheus (Private :9090)                                            |
+|   Local Kubernetes Cluster (Private :6443)                                    |
+|          ^                         ^                                          |
+|          | (PromQL Whitelist)      | (Least-Privilege RBAC)                   |
+|          +------------+------------+                                          |
+|                       |                                                       |
+|             CLOUDOPS AGENT (agent/)                                           |
++-------------------------------------------------------------------------------+
+```
+
+### Why the Connector Exists
+
+Traditional SaaS monitoring and remediation platforms require customers to expose their internal Kubernetes API (:6443) or Prometheus server (:9090) over public endpoints or complex VPNs. CloudOps AI eliminates this security risk through an **outbound-only** agent:
+- The customer infrastructure makes **outbound HTTPS requests only** to the CloudOps control plane.
+- The control plane **never initiates inbound connections** to customer networks.
+- Customer infrastructure services remain completely private and unreachable from the internet.
+
+### Enrollment Flow
+
+1. **Create Connection**: In the CloudOps AI UI (**Infrastructure Connections** -> **+ Add Infrastructure**), generate a connection.
+2. **One-Time Enrollment Token**: The control plane generates a cryptographically secure, high-entropy enrollment token (`cope_...`). Only a SHA-256 hash is stored in MongoDB with a 24-hour expiry; the raw token is shown once to the user.
+3. **Agent Registration**: The agent starts with `CLOUDOPS_URL` and `ENROLLMENT_TOKEN`. It calls `POST /api/agent/register` outbound.
+4. **Credential Exchange**: The control plane verifies the token hash, marks the enrollment token as single-use, and issues a unique `agentId` and long-lived operational token (`copa_...`).
+5. **Operational State**: The agent saves the operational token and begins periodic outbound loops. The connection transitions to `CONNECTED`.
+
+### Agent Operations
+
+- **Heartbeat (~20s)**: Agent sends health state to `POST /api/agent/heartbeat`. If heartbeat is missed for >60s, connection state updates to `DISCONNECTED`.
+- **Telemetry (~10s)**: Agent queries local Prometheus using a strict whitelist of PromQL queries and inspects local Kubernetes resources, sending normalized telemetry to `POST /api/agent/telemetry`.
+- **Command Polling (~5s)**: Agent polls `GET /api/agent/commands` for approved remediation actions.
+- **Remediation Execution**: Agent executes approved actions and returns execution state to `POST /api/agent/command-result`.
+- **Revocation**: Admins can click **Revoke Connection** in the UI to immediately revoke access, which invalidates agent tokens and blocks all future agent communications.
+
+### Security Model & Guardrails
+
+- **No Public API Inbound Ports**: Customer cluster remains behind private firewall/VPC.
+- **Strict PromQL Whitelist**: Only controlled metrics (CPU, Memory, Request Rate, Error Rate, P95, Network) are queried. Arbitrary PromQL injection is blocked.
+- **Strict Remediation Action Whitelist**: Only `RESTART_SERVICE` and `SCALE_SERVICE` on deployments in allowed namespaces are permitted. Arbitrary shell commands and kubectl scripts are strictly rejected.
+- **Defense in Depth**: Both the backend Policy Engine AND the agent-side executor independently enforce whitelist checks, namespace constraints, and replica limits (`min: 1, max: 10`).
+- **Replay Protection**: Every command has a unique `commandId`. The agent caches executed IDs and refuses duplicate executions.
+- **Least-Privilege Kubernetes RBAC**: The agent runs under a scoped `ServiceAccount` with permissions only to read topology and patch deployments in specific namespaces (`cloudops`). No `cluster-admin`.
+- **Two-Stage Verification**: State convergence is verified both locally on the agent and independently on the control plane.
+- **Audit Logging**: Every remediation action and agent command is persisted in `RemediationAction` and `AgentCommand` collections.
+
+---
+
 ## Security
 
 - **Authentication**: JWT + bcrypt with httpOnly cookie support
+- **Agent Security**: Outbound Bearer token authentication with SHA-256 token hashing
 - **CORS**: Strict origin whitelist, configurable via `CORS_ORIGINS`
-- **Rate Limiting**: 500 requests per 15 minutes per IP
+- **Rate Limiting**: Granular rate limiters for agent heartbeat, telemetry, registration, and polling
 - **Helmet**: Security headers (CSP, HSTS, etc.)
 - **Policy Engine**: Fail-closed — only whitelisted actions/targets/namespaces allowed
 - **Input Validation**: Field whitelisting on create/update operations
 - **Secret Management**: All secrets via environment variables, never hardcoded
+
 
 ---
 

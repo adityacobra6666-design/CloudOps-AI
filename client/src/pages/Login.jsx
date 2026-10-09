@@ -84,7 +84,7 @@ function Login() {
                             <label style={{ marginBottom: 0 }}>Password</label>
                             <button
                                 type="button"
-                                style={{ background: "none", border: "none", color: "#38bdf8", cursor: "pointer", fontSize: "0.85rem", padding: 0 }}
+                                style={{ background: "none", border: "none", color: "var(--color-blue-primary)", cursor: "pointer", fontSize: "0.85rem", padding: 0 }}
                                 onClick={() => navigate("/forgot-password")}
                             >
                                 Forgot password?

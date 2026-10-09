@@ -29,11 +29,21 @@ export default function ReliabilityPage() {
         <div className="page-container">
             <Header
                 title="Reliability & SLO Dashboard"
+                subtitle="Service Level Objectives, error budget burn rates, and availability telemetry."
                 onRefresh={fetchReliability}
+                refreshing={loading}
             />
 
             {loading ? (
-                <div className="empty-state">Calculating SLO telemetry & error budgets...</div>
+                <div className="slo-cards-grid">
+                    {[1, 2, 3].map((n) => (
+                        <div key={n} className="slo-card">
+                            <div className="skeleton skeleton-title" style={{ width: "60%", height: "18px" }} />
+                            <div className="skeleton skeleton-card" style={{ height: "50px", margin: "10px 0" }} />
+                            <div className="skeleton skeleton-text" style={{ width: "80%" }} />
+                        </div>
+                    ))}
+                </div>
             ) : (
                 <>
                     {/* SLO CARDS GRID */}

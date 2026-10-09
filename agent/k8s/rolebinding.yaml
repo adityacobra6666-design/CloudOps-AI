@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudops-agent-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: cloudops-agent-sa
+    namespace: cloudops-agent
+roleRef:
+  kind: ClusterRole
+  name: cloudops-agent-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudops-agent-workload-binding
+  namespace: cloudops
+subjects:
+  - kind: ServiceAccount
+    name: cloudops-agent-sa
+    namespace: cloudops-agent
+roleRef:
+  kind: Role
+  name: cloudops-agent-workload-role
+  apiGroup: rbac.authorization.k8s.io

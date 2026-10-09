@@ -30,6 +30,8 @@ function parseRangeParams(rangeStr) {
     };
 }
 
+const InfrastructureConnection = require("../models/infrastructureConnection.model");
+
 /**
  * Combined Network Rx + Tx range series generator
  */
@@ -68,6 +70,103 @@ function mergeNetworkSeries(rxSeries, txSeries) {
  */
 exports.getTelemetry = async (req, res) => {
     try {
+        const { connectionId } = req.query || {};
+
+        // If a connected infrastructure environment is requested
+        if (connectionId && connectionId !== "local") {
+            const conn = await InfrastructureConnection.findById(connectionId);
+            if (conn) {
+                const metrics = conn.telemetry?.metrics || {};
+                const safeNum = (v, fallback = 0) => {
+                    const n = parseFloat(v);
+                    return isNaN(n) ? fallback : n;
+                };
+
+                const cpuVal = safeNum(metrics.cpu);
+                const memVal = safeNum(metrics.memory);
+                const reqRateVal = safeNum(metrics.requestRate);
+                const errRateVal = safeNum(metrics.errorRate);
+                const p95Val = safeNum(metrics.p95Latency);
+                const netRxVal = safeNum(metrics.networkRx);
+                const netTxVal = safeNum(metrics.networkTx);
+                const totalNetVal = netRxVal + netTxVal;
+
+                // Build a recent history series for charts based on current telemetry
+                const now = Math.floor(Date.now() / 1000);
+                const sampleTimes = [now - 120, now - 90, now - 60, now - 30, now];
+                const makeSeries = (val) => sampleTimes.map(ts => ({
+                    timestamp: ts,
+                    time: new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                    fullTime: new Date(ts * 1000).toISOString(),
+                    value: parseFloat(val.toFixed(2))
+                }));
+
+                const services = [
+                    { name: "CloudOps Agent", status: conn.status === "CONNECTED" ? "Healthy" : "Critical" },
+                    { name: "Connected Prometheus", status: conn.status === "CONNECTED" ? "Healthy" : "Critical" },
+                    { name: "Kubernetes Cluster", status: (conn.k8sSummary?.nodesCount || 0) > 0 ? "Healthy" : "Degraded" }
+                ];
+
+                return res.json({
+                    success: true,
+                    environment: conn.environment,
+                    connectionName: conn.name,
+                    status: conn.status,
+                    range: req.query.range || "30m",
+                    timestamp: conn.telemetry?.recordedAt || new Date().toISOString(),
+                    summary: {
+                        cpu: {
+                            value: parseFloat(cpuVal.toFixed(1)),
+                            unit: "%",
+                            status: cpuVal > 85 ? "Critical" : cpuVal > 70 ? "Warning" : "Healthy"
+                        },
+                        memory: {
+                            value: parseFloat(memVal.toFixed(1)),
+                            unit: "%",
+                            status: memVal > 90 ? "Critical" : memVal > 75 ? "Warning" : "Healthy"
+                        },
+                        requestRate: {
+                            value: parseFloat(reqRateVal.toFixed(2)),
+                            unit: "req/s",
+                            status: "Healthy"
+                        },
+                        errorRate: {
+                            value: parseFloat(errRateVal.toFixed(2)),
+                            unit: "%",
+                            status: errRateVal > 5 ? "Critical" : errRateVal > 1 ? "Warning" : "Healthy"
+                        },
+                        p95Latency: {
+                            value: Math.round(p95Val),
+                            unit: "ms",
+                            status: p95Val > 500 ? "Critical" : p95Val > 200 ? "Warning" : "Healthy"
+                        },
+                        network: {
+                            value: totalNetVal > 1024 ? parseFloat((totalNetVal / 1024).toFixed(2)) : parseFloat(totalNetVal.toFixed(1)),
+                            unit: totalNetVal > 1024 ? "MB/s" : "KB/s",
+                            rx: parseFloat(netRxVal.toFixed(1)),
+                            tx: parseFloat(netTxVal.toFixed(1)),
+                            status: "Healthy"
+                        }
+                    },
+                    metrics: {
+                        cpu: makeSeries(cpuVal),
+                        memory: makeSeries(memVal),
+                        requestRate: makeSeries(reqRateVal),
+                        errorRate: makeSeries(errRateVal),
+                        p95Latency: makeSeries(p95Val),
+                        network: sampleTimes.map(ts => ({
+                            timestamp: ts,
+                            time: new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                            fullTime: new Date(ts * 1000).toISOString(),
+                            rx: parseFloat(netRxVal.toFixed(1)),
+                            tx: parseFloat(netTxVal.toFixed(1))
+                        }))
+                    },
+                    services
+                });
+            }
+        }
+
         const { rangeKey, start, end, step } = parseRangeParams(req.query.range);
 
         // PromQL queries

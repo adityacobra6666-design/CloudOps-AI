@@ -2,24 +2,39 @@ import React, { useState } from "react";
 import { useMetrics } from "../hooks/useMetrics";
 import { useSystemHealth } from "../hooks/useSystemHealth";
 import Header from "../components/Header";
+import { ModalPortal } from "../components/Modal";
 
 export default function Infrastructure() {
-    const { metrics, lastUpdated, refetch: refetchMetrics } = useMetrics(5000);
-    const { services, refetch: refetchHealth } = useSystemHealth(5000);
+    const { metrics, loading: metricsLoading, lastUpdated, refetch: refetchMetrics } = useMetrics(5000);
+    const { services = [], loading: healthLoading, refetch: refetchHealth } = useSystemHealth(5000);
     const [filter, setFilter] = useState("ALL");
     const [selectedService, setSelectedService] = useState(null);
+
+    const isRefreshing = Boolean(metricsLoading || healthLoading);
 
     const handleRefresh = () => {
         refetchMetrics();
         refetchHealth();
     };
 
+    React.useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === "Escape" && selectedService) {
+                setSelectedService(null);
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [selectedService]);
+
+    const safeServices = Array.isArray(services) ? services : [];
+
     // Enrich services with resource usage numbers
     const enrichedContainers = [
         {
             name: "backend",
             role: "Express API & Control Engine",
-            status: services.find(s => s.name === "Backend")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "Backend")?.status || "Healthy",
             cpu: `${metrics?.cpu?.value || 18}%`,
             memory: `${metrics?.memory?.value || 42}%`,
             network: "1.2 MB/s",
@@ -29,7 +44,7 @@ export default function Infrastructure() {
         {
             name: "mongodb",
             role: "Primary Database (MongoDB Mongoose)",
-            status: services.find(s => s.name === "MongoDB")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "MongoDB")?.status || "Healthy",
             cpu: "4%",
             memory: "210 MB",
             network: "0.4 MB/s",
@@ -39,7 +54,7 @@ export default function Infrastructure() {
         {
             name: "prometheus",
             role: "Metrics Collector & Time-Series DB",
-            status: services.find(s => s.name === "Prometheus")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "Prometheus")?.status || "Healthy",
             cpu: "8%",
             memory: "185 MB",
             network: "2.1 MB/s",
@@ -49,7 +64,7 @@ export default function Infrastructure() {
         {
             name: "grafana",
             role: "Observability Dashboards",
-            status: services.find(s => s.name === "Grafana")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "Grafana")?.status || "Healthy",
             cpu: "3%",
             memory: "120 MB",
             network: "0.1 MB/s",
@@ -59,7 +74,7 @@ export default function Infrastructure() {
         {
             name: "alertmanager",
             role: "Alert Routing & Webhooks",
-            status: services.find(s => s.name === "Alertmanager")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "Alertmanager")?.status || "Healthy",
             cpu: "1%",
             memory: "45 MB",
             network: "0.05 MB/s",
@@ -69,7 +84,7 @@ export default function Infrastructure() {
         {
             name: "ollama",
             role: "LLM Inference Engine (Llama 3.2)",
-            status: services.find(s => s.name === "Ollama")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "Ollama")?.status || "Healthy",
             cpu: "12%",
             memory: "1.8 GB",
             network: "0.3 MB/s",
@@ -87,8 +102,10 @@ export default function Infrastructure() {
         <div className="page-container">
             <Header
                 title="Infrastructure & Services"
+                subtitle="Runtime containers, microservice processes, and cluster resources."
                 lastUpdated={lastUpdated}
                 onRefresh={handleRefresh}
+                refreshing={isRefreshing}
             />
 
             {/* INFRASTRUCTURE TOP STATS */}
@@ -193,57 +210,59 @@ export default function Infrastructure() {
 
             {/* SERVICE DETAIL MODAL */}
             {selectedService && (
-                <div className="modal-overlay" onClick={() => setSelectedService(null)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>Service Details: {selectedService.name}</h3>
-                            <button
-                                type="button"
-                                className="close-btn"
-                                onClick={() => setSelectedService(null)}
-                            >
-                                ✕
-                            </button>
-                        </div>
-                        <div className="modal-body">
-                            <div className="detail-row">
-                                <span className="lbl">Image:</span>
-                                <code>{selectedService.image}</code>
+                <ModalPortal isOpen={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
+                    <div className="modal-overlay" onClick={() => setSelectedService(null)}>
+                        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <h3>Service Details: {selectedService.name}</h3>
+                                <button
+                                    type="button"
+                                    className="close-btn"
+                                    onClick={() => setSelectedService(null)}
+                                >
+                                    ✕
+                                </button>
                             </div>
-                            <div className="detail-row">
-                                <span className="lbl">Role:</span>
-                                <span>{selectedService.role}</span>
+                            <div className="modal-body">
+                                <div className="detail-row">
+                                    <span className="lbl">Image:</span>
+                                    <code>{selectedService.image}</code>
+                                </div>
+                                <div className="detail-row">
+                                    <span className="lbl">Role:</span>
+                                    <span>{selectedService.role}</span>
+                                </div>
+                                <div className="detail-row">
+                                    <span className="lbl">Current Status:</span>
+                                    <span className={`status-pill ${selectedService.status.toLowerCase()}`}>
+                                        {selectedService.status}
+                                    </span>
+                                </div>
+                                <div className="detail-row">
+                                    <span className="lbl">CPU Consumption:</span>
+                                    <span>{selectedService.cpu}</span>
+                                </div>
+                                <div className="detail-row">
+                                    <span className="lbl">Memory Allocated:</span>
+                                    <span>{selectedService.memory}</span>
+                                </div>
+                                <div className="detail-row">
+                                    <span className="lbl">Target Uptime:</span>
+                                    <span>{selectedService.uptime}</span>
+                                </div>
                             </div>
-                            <div className="detail-row">
-                                <span className="lbl">Current Status:</span>
-                                <span className={`status-pill ${selectedService.status.toLowerCase()}`}>
-                                    {selectedService.status}
-                                </span>
+                            <div className="modal-footer">
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={() => setSelectedService(null)}
+                                >
+                                    Close
+                                </button>
                             </div>
-                            <div className="detail-row">
-                                <span className="lbl">CPU Consumption:</span>
-                                <span>{selectedService.cpu}</span>
-                            </div>
-                            <div className="detail-row">
-                                <span className="lbl">Memory Allocated:</span>
-                                <span>{selectedService.memory}</span>
-                            </div>
-                            <div className="detail-row">
-                                <span className="lbl">Target Uptime:</span>
-                                <span>{selectedService.uptime}</span>
-                            </div>
-                        </div>
-                        <div className="modal-footer">
-                            <button
-                                type="button"
-                                className="btn-secondary"
-                                onClick={() => setSelectedService(null)}
-                            >
-                                Close
-                            </button>
                         </div>
                     </div>
-                </div>
+                </ModalPortal>
             )}
         </div>
     );

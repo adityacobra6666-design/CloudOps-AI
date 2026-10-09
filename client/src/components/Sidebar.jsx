@@ -15,7 +15,8 @@ export default function Sidebar({ mobileOpen, setMobileOpen, user, onLogout }) {
         { path: "/incidents", label: "Incidents", icon: "🚨" },
         { path: "/ai-ops", label: "AI Operations", icon: "⚡" },
         { path: "/kubernetes", label: "Kubernetes", icon: "☸️" },
-        { path: "/reliability", label: "Reliability", icon: "🎯" }
+        { path: "/reliability", label: "Reliability", icon: "🎯" },
+        { path: "/connections", label: "Infrastructure Connections", icon: "🔗" }
     ];
 
     const getStatusColor = () => {
@@ -110,6 +111,7 @@ export default function Sidebar({ mobileOpen, setMobileOpen, user, onLogout }) {
                             className="logout-btn"
                             onClick={onLogout}
                             title="Sign Out"
+                            aria-label="Sign Out"
                         >
                             🚪
                         </button>

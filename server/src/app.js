@@ -15,6 +15,8 @@ const metricsRoutes = require("./routes/metrics.routes");
 const reliabilityRoutes = require("./routes/reliability.routes");
 const kubernetesRoutes = require("./routes/kubernetes.routes");
 const observabilityRoutes = require("./routes/observability.routes");
+const infrastructureRoutes = require("./routes/infrastructure.routes");
+const agentRoutes = require("./routes/agent.routes");
 
 const app = express();
 
@@ -51,43 +53,49 @@ register.registerMetric(httpRequestDuration);
 app.use(helmet());
 app.use(cookieParser());
 
-// Build allowed origins from CORS_ORIGINS env var + sensible defaults
+// Build allowed origins from CORS_ORIGINS env var + production/development defaults
 const corsOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(",").map(s => s.trim()).filter(Boolean)
+    ? process.env.CORS_ORIGINS.split(",").map(s => s.trim().replace(/\/+$/, "")).filter(Boolean)
     : [];
 
+const clientUrl = process.env.CLIENT_URL ? process.env.CLIENT_URL.trim().replace(/\/+$/, "") : null;
+
 const allowedOrigins = [
+    "https://cloudops-ai-frontend.onrender.com",
     ...corsOrigins,
-    process.env.CLIENT_URL,
-    // Development defaults (only when no explicit CORS_ORIGINS is set)
-    ...(!process.env.CORS_ORIGINS ? [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000"
-    ] : [])
+    ...(clientUrl ? [clientUrl] : []),
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000"
 ].filter(Boolean);
 
-app.use(cors({
+const corsOptions = {
     origin: (origin, callback) => {
         // Allow requests with no origin (server-to-server, Prometheus scraping, curl)
-        if (!origin || allowedOrigins.includes(origin)) {
+        if (!origin || allowedOrigins.includes(origin.trim().replace(/\/+$/, ""))) {
             callback(null, true);
         } else {
             callback(new Error(`CORS: Origin ${origin} is not allowed`));
         }
     },
-    credentials: true
-}));
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "x-agent-id"],
+    optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
-// Global API Rate Limiter
+// Global API Rate Limiter (Agent endpoints use dedicated rate limiters)
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 500,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.path.startsWith("/agent"),
     message: { success: false, message: "Too many requests from this IP, please try again later." }
 });
 
@@ -197,6 +205,8 @@ app.use("/api/metrics", metricsRoutes);
 app.use("/api/reliability", reliabilityRoutes);
 app.use("/api/kubernetes", kubernetesRoutes);
 app.use("/api/observability", observabilityRoutes);
+app.use("/api/infrastructure", infrastructureRoutes);
+app.use("/api/agent", agentRoutes);
 
 // ======================================================
 // 404 NOT FOUND HANDLER (Guarantees JSON, never HTML)

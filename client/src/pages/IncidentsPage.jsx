@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
+import Header from "../components/Header";
+import { ModalPortal } from "../components/Modal";
 import {
     getIncidents,
     createIncident,
@@ -89,6 +91,18 @@ export default function IncidentsPage() {
                 .catch(() => setRemediationHistory([]));
         }
     }, [selectedIncident?._id]);
+
+    // Handle Escape key to close modals
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === "Escape") {
+                if (showCreateModal) setShowCreateModal(false);
+                if (selectedIncident) setSelectedIncident(null);
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [showCreateModal, selectedIncident]);
 
     const handleCreateIncident = async (e) => {
         e.preventDefault();
@@ -239,6 +253,13 @@ export default function IncidentsPage() {
 
     return (
         <div className="page-container">
+            <Header
+                title="Incidents & Anomaly Management"
+                subtitle="Real-time incident response, root cause diagnostics, and verified autonomous remediation."
+                onRefresh={() => fetchIncidentsData(true)}
+                refreshing={loading}
+            />
+
             {/* TOOLBAR */}
             <div className="filter-bar">
                 <div className="filter-left">
@@ -349,64 +370,67 @@ export default function IncidentsPage() {
 
             {/* CREATE INCIDENT MODAL */}
             {showCreateModal && (
-                <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>Create New Incident</h3>
-                            <button type="button" className="close-btn" onClick={() => setShowCreateModal(false)}>✕</button>
+                <ModalPortal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)}>
+                    <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+                        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <h3>Create New Incident</h3>
+                                <button type="button" className="close-btn" onClick={() => setShowCreateModal(false)}>✕</button>
+                            </div>
+                            <form onSubmit={handleCreateIncident}>
+                                <div className="modal-body">
+                                    <div className="form-group">
+                                        <label>Incident Title</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            placeholder="e.g. High CPU saturation on backend container"
+                                            value={newTitle}
+                                            onChange={(e) => setNewTitle(e.target.value)}
+                                            className="form-input"
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Severity</label>
+                                        <select
+                                            value={newSeverity}
+                                            onChange={(e) => setNewSeverity(e.target.value)}
+                                            className="form-select"
+                                        >
+                                            <option value="CRITICAL">Critical</option>
+                                            <option value="HIGH">High</option>
+                                            <option value="MEDIUM">Medium</option>
+                                            <option value="LOW">Low</option>
+                                        </select>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Description / Symptoms</label>
+                                        <textarea
+                                            rows="3"
+                                            placeholder="Describe observed infrastructure anomalies..."
+                                            value={newDescription}
+                                            onChange={(e) => setNewDescription(e.target.value)}
+                                            className="form-textarea"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="modal-footer">
+                                    <button type="button" className="btn-secondary" onClick={() => setShowCreateModal(false)}>Cancel</button>
+                                    <button type="submit" className="btn-primary">Create Incident</button>
+                                </div>
+                            </form>
                         </div>
-                        <form onSubmit={handleCreateIncident}>
-                            <div className="modal-body">
-                                <div className="form-group">
-                                    <label>Incident Title</label>
-                                    <input
-                                        type="text"
-                                        required
-                                        placeholder="e.g. High CPU saturation on backend container"
-                                        value={newTitle}
-                                        onChange={(e) => setNewTitle(e.target.value)}
-                                        className="form-input"
-                                    />
-                                </div>
-                                <div className="form-group">
-                                    <label>Severity</label>
-                                    <select
-                                        value={newSeverity}
-                                        onChange={(e) => setNewSeverity(e.target.value)}
-                                        className="form-select"
-                                    >
-                                        <option value="CRITICAL">Critical</option>
-                                        <option value="HIGH">High</option>
-                                        <option value="MEDIUM">Medium</option>
-                                        <option value="LOW">Low</option>
-                                    </select>
-                                </div>
-                                <div className="form-group">
-                                    <label>Description / Symptoms</label>
-                                    <textarea
-                                        rows="3"
-                                        placeholder="Describe observed infrastructure anomalies..."
-                                        value={newDescription}
-                                        onChange={(e) => setNewDescription(e.target.value)}
-                                        className="form-textarea"
-                                    />
-                                </div>
-                            </div>
-                            <div className="modal-footer">
-                                <button type="button" className="btn-secondary" onClick={() => setShowCreateModal(false)}>Cancel</button>
-                                <button type="submit" className="btn-primary">Create Incident</button>
-                            </div>
-                        </form>
                     </div>
-                </div>
+                </ModalPortal>
             )}
 
             {/* DETAILED INCIDENT & REMEDIATION MODAL */}
             {selectedIncident && (
-                <div className="modal-overlay" onClick={() => setSelectedIncident(null)}>
-                    <div className="modal-content large-modal" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <div>
+                <ModalPortal isOpen={Boolean(selectedIncident)} onClose={() => setSelectedIncident(null)}>
+                    <div className="modal-overlay" onClick={() => setSelectedIncident(null)}>
+                        <div className="modal-content large-modal" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <div>
                                 <span className={`severity-badge ${selectedIncident.severity?.toLowerCase()}`}>
                                     {selectedIncident.severity}
                                 </span>
@@ -597,7 +621,8 @@ export default function IncidentsPage() {
                         </div>
                     </div>
                 </div>
-            )}
+            </ModalPortal>
+        )}
         </div>
     );
 }

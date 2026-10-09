@@ -9,7 +9,7 @@ import {
     Tooltip,
     Legend
 } from "recharts";
-import { getObservabilityTelemetry } from "../services/api";
+import { getObservabilityTelemetry, getInfrastructureConnections } from "../services/api";
 import { useTheme } from "../context/ThemeContext";
 import ThemeToggle from "../components/ThemeToggle";
 
@@ -18,6 +18,8 @@ export default function ObservabilityPage() {
     const isDark = theme === "dark";
 
     const [range, setRange] = useState("30m");
+    const [selectedEnvironment, setSelectedEnvironment] = useState("local");
+    const [availableConnections, setAvailableConnections] = useState([]);
     const [telemetry, setTelemetry] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -25,7 +27,20 @@ export default function ObservabilityPage() {
 
     const abortControllerRef = useRef(null);
 
-    const fetchTelemetryData = async (selectedRange, showGlobalLoading = false) => {
+    // Load available connections
+    useEffect(() => {
+        const loadConnections = async () => {
+            try {
+                const res = await getInfrastructureConnections();
+                if (res.success) {
+                    setAvailableConnections(res.connections || []);
+                }
+            } catch (e) {}
+        };
+        loadConnections();
+    }, []);
+
+    const fetchTelemetryData = async (selectedRange, showGlobalLoading = false, connId = selectedEnvironment) => {
         if (showGlobalLoading) setLoading(true);
         setIsRefreshing(true);
         setError(null);
@@ -36,7 +51,7 @@ export default function ObservabilityPage() {
         abortControllerRef.current = new AbortController();
 
         try {
-            const data = await getObservabilityTelemetry(selectedRange, abortControllerRef.current.signal);
+            const data = await getObservabilityTelemetry(selectedRange, abortControllerRef.current.signal, connId);
             if (data && data.success) {
                 setTelemetry(data);
             } else {
@@ -53,10 +68,10 @@ export default function ObservabilityPage() {
         }
     };
 
-    // Initial load & range change listener
+    // Initial load & range/environment change listener
     useEffect(() => {
-        fetchTelemetryData(range, true);
-    }, [range]);
+        fetchTelemetryData(range, true, selectedEnvironment);
+    }, [range, selectedEnvironment]);
 
     // Auto-refresh timer every 5 seconds
     useEffect(() => {
@@ -144,8 +159,24 @@ export default function ObservabilityPage() {
                 </div>
 
                 <div className="obs-toolbar">
+                    {/* ENVIRONMENT SELECTOR */}
+                    <select
+                        className="form-select"
+                        value={selectedEnvironment}
+                        onChange={(e) => setSelectedEnvironment(e.target.value)}
+                        title="Select Infrastructure Environment"
+                        aria-label="Select Infrastructure Environment"
+                    >
+                        <option value="local">💻 Local (Docker / Minikube)</option>
+                        {availableConnections.map((c) => (
+                            <option key={c._id} value={c._id}>
+                                🌐 {c.name} ({c.status})
+                            </option>
+                        ))}
+                    </select>
+
                     {/* TIME RANGE SELECTOR */}
-                    <div className="obs-range-group">
+                    <div className="obs-range-group" role="group" aria-label="Time range selector">
                         {["15m", "30m", "1h", "6h"].map((r) => (
                             <button
                                 key={r}
@@ -161,19 +192,17 @@ export default function ObservabilityPage() {
                     {/* MANUAL REFRESH BUTTON */}
                     <button
                         type="button"
-                        className="obs-refresh-btn"
+                        className={`refresh-btn ${isRefreshing ? "spinning" : ""}`}
                         onClick={handleManualRefresh}
                         disabled={isRefreshing}
+                        aria-label="Refresh telemetry"
                     >
-                        <span style={{ display: "inline-block", transform: isRefreshing ? "rotate(180deg)" : "none", transition: "transform 0.5s" }}>
-                            🔄
-                        </span>
-                        {isRefreshing ? "Refreshing..." : "Refresh"}
+                        <span className="refresh-icon" aria-hidden="true">🔄</span>
+                        <span>{isRefreshing ? "Refreshing..." : "Refresh"}</span>
                     </button>
 
                     <ThemeToggle />
                 </div>
-
             </div>
 
             {/* GLOBAL LOADING STATE */}

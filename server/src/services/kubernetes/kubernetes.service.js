@@ -25,6 +25,17 @@ class KubernetesService {
 
             let configLoaded = false;
 
+            const resolveExistingPath = (filePath) => {
+                if (!filePath) return undefined;
+                if (fs.existsSync(filePath)) return filePath;
+                const containerHome = os.homedir();
+                const rewritten = filePath
+                    .replace(/\/home\/[^\/]+\/\.minikube/g, `${containerHome}/.minikube`)
+                    .replace(/^~\/\.minikube/g, `${containerHome}/.minikube`);
+                if (fs.existsSync(rewritten)) return rewritten;
+                return undefined;
+            };
+
             const loadAdjustedKubeconfig = (filePath) => {
                 const rawContent = fs.readFileSync(filePath, "utf8");
                 const containerHome = os.homedir();
@@ -79,15 +90,14 @@ class KubernetesService {
             }
 
             const isDocker = fs.existsSync("/.dockerenv") || process.env.IS_DOCKER === "true";
-            const containerHome = os.homedir();
 
             // Process Cluster Endpoints & Host Resolution
             if (this.kc.clusters) {
                 this.kc.clusters.forEach((cluster) => {
                     if (cluster.caFile) {
-                        const rewritten = cluster.caFile.replace(/\/home\/[^\/]+\/\.minikube/g, `${containerHome}/.minikube`).replace(/^~\/\.minikube/g, `${containerHome}/.minikube`);
-                        if (fs.existsSync(rewritten)) {
-                            cluster.caFile = rewritten;
+                        const validPath = resolveExistingPath(cluster.caFile);
+                        if (validPath) {
+                            cluster.caFile = validPath;
                         } else {
                             cluster.caFile = undefined;
                             cluster.skipTLSVerify = true;
@@ -96,8 +106,6 @@ class KubernetesService {
 
                     if (cluster.server) {
                         // Inside Docker containers, 127.0.0.1 / localhost points to the container itself.
-                        // Rewrite 127.0.0.1 / localhost to host.docker.internal (or KUBERNETES_SERVER_HOST)
-                        // to reach the host system's Kubernetes API server (Minikube / Kind).
                         if (isDocker && (cluster.server.includes("127.0.0.1") || cluster.server.includes("localhost"))) {
                             const targetHost = process.env.KUBERNETES_SERVER_HOST || "host.docker.internal";
                             const oldServer = cluster.server;
@@ -124,16 +132,16 @@ class KubernetesService {
             if (this.kc.users) {
                 this.kc.users.forEach((u) => {
                     if (u.certFile) {
-                        u.certFile = u.certFile.replace(/\/home\/[^\/]+\/\.minikube/g, `${containerHome}/.minikube`).replace(/^~\/\.minikube/g, `${containerHome}/.minikube`);
+                        u.certFile = resolveExistingPath(u.certFile);
                     }
                     if (u.keyFile) {
-                        u.keyFile = u.keyFile.replace(/\/home\/[^\/]+\/\.minikube/g, `${containerHome}/.minikube`).replace(/^~\/\.minikube/g, `${containerHome}/.minikube`);
+                        u.keyFile = resolveExistingPath(u.keyFile);
                     }
                     if (u.user && u.user["client-certificate"]) {
-                        u.user["client-certificate"] = u.user["client-certificate"].replace(/\/home\/[^\/]+\/\.minikube/g, `${containerHome}/.minikube`).replace(/^~\/\.minikube/g, `${containerHome}/.minikube`);
+                        u.user["client-certificate"] = resolveExistingPath(u.user["client-certificate"]);
                     }
                     if (u.user && u.user["client-key"]) {
-                        u.user["client-key"] = u.user["client-key"].replace(/\/home\/[^\/]+\/\.minikube/g, `${containerHome}/.minikube`).replace(/^~\/\.minikube/g, `${containerHome}/.minikube`);
+                        u.user["client-key"] = resolveExistingPath(u.user["client-key"]);
                     }
                 });
             }
@@ -499,21 +507,13 @@ class KubernetesService {
     // READ SPECIFIC DEPLOYMENT
     // =========================================
     async getDeployment(name, namespace) {
+        if (!name || typeof name !== "string") {
+            throw new Error("Invalid deployment name provided to getDeployment");
+        }
         if (!this.checkConnection()) throw new Error("Kubernetes client not initialized");
         const ns = namespace || this.getDefaultNamespace();
 
-        let res;
-        try {
-            if (this.appsApi.readNamespacedDeployment.length === 1) {
-                res = await this.appsApi.readNamespacedDeployment({ name, namespace: ns });
-            } else {
-                res = await this.appsApi.readNamespacedDeployment(name, ns);
-            }
-        } catch (err) {
-            res = await this.appsApi.readNamespacedDeployment({ name, namespace: ns }).catch(() => null)
-                || await this.appsApi.readNamespacedDeployment(name, ns).catch(() => null);
-        }
-
+        const res = await this.appsApi.readNamespacedDeployment({ name, namespace: ns });
         const dep = res?.body || res;
         if (!dep) {
             throw new Error(`Deployment "${name}" not found in namespace "${ns}"`);
@@ -525,7 +525,8 @@ class KubernetesService {
             desired: dep.spec?.replicas ?? 0,
             current: dep.status?.replicas ?? 0,
             ready: dep.status?.readyReplicas ?? 0,
-            available: dep.status?.availableReplicas ?? 0
+            available: dep.status?.availableReplicas ?? 0,
+            raw: dep
         };
     }
 
@@ -533,14 +534,17 @@ class KubernetesService {
     // SCALE DEPLOYMENT
     // =========================================
     async scaleDeployment(name, newReplicas, namespace) {
+        if (!name || typeof name !== "string") {
+            throw new Error("Invalid deployment name provided for scaleDeployment");
+        }
         const ns = namespace || this.getDefaultNamespace();
         const min = KUBERNETES_CONFIG.minReplicas || 1;
         const max = KUBERNETES_CONFIG.maxReplicas || 10;
 
-        const targetReplicas = Number(newReplicas);
+        const targetReplicas = parseInt(newReplicas, 10);
 
         if (isNaN(targetReplicas) || targetReplicas < min || targetReplicas > max) {
-            throw new Error(`Invalid replica count (${newReplicas}). Must be between ${min} and ${max}.`);
+            throw new Error(`Invalid replica count (${newReplicas}). Must be an integer between ${min} and ${max}.`);
         }
 
         if (!this.checkConnection()) {
@@ -552,24 +556,19 @@ class KubernetesService {
         const currentDep = await this.getDeployment(name, ns).catch(() => ({ desired: 1 }));
         const previousReplicas = currentDep.desired;
 
-        const patch = {
-            spec: {
-                replicas: targetReplicas
-            }
-        };
+        // Apply RFC 6902 JSON Patch on /spec/replicas
+        const patch = [
+            { op: "replace", path: "/spec/replicas", value: targetReplicas }
+        ];
 
-        const contentType = k8s.PatchUtils?.PATCH_FORMAT_STRATEGIC_MERGE_PATCH || "application/strategic-merge-patch+json";
-        const options = { headers: { "Content-Type": contentType } };
+        await this.appsApi.patchNamespacedDeployment({
+            name,
+            namespace: ns,
+            body: patch
+        });
 
-        try {
-            if (this.appsApi.patchNamespacedDeployment.length === 1) {
-                await this.appsApi.patchNamespacedDeployment({ name, namespace: ns, body: patch, options });
-            } else {
-                await this.appsApi.patchNamespacedDeployment(name, ns, patch, undefined, undefined, undefined, undefined, undefined, options);
-            }
-        } catch (patchErr) {
-            await this.appsApi.patchNamespacedDeployment({ name, namespace: ns, body: patch, options });
-        }
+        // Wait for state convergence
+        const convergence = await this.waitForDeploymentConvergence(name, targetReplicas, ns, 20000, 1500);
 
         return {
             success: true,
@@ -577,7 +576,9 @@ class KubernetesService {
             namespace: ns,
             previousReplicas,
             newReplicas: targetReplicas,
-            message: `Successfully updated deployment "${name}" replicas from ${previousReplicas} to ${targetReplicas}`
+            readyReplicas: convergence.readyReplicas,
+            converged: convergence.converged,
+            message: `Successfully scaled deployment "${name}" replicas from ${previousReplicas} to ${targetReplicas} (${convergence.readyReplicas}/${targetReplicas} ready)`
         };
     }
 
@@ -585,52 +586,58 @@ class KubernetesService {
     // RESTART DEPLOYMENT (Rolling Restart)
     // =========================================
     async restartDeployment(name, namespace) {
+        if (!name || typeof name !== "string") {
+            throw new Error("Invalid deployment name provided for restartDeployment");
+        }
         if (!this.checkConnection()) {
             throw new Error("Kubernetes client is not initialized");
         }
 
         const ns = namespace || this.getDefaultNamespace();
-
         console.log(`☸️ Triggering rolling restart for deployment "${name}" in namespace "${ns}"`);
 
-        const patch = {
-            spec: {
-                template: {
-                    metadata: {
-                        annotations: {
-                            "kubectl.kubernetes.io/restartedAt": new Date().toISOString()
-                        }
-                    }
+        const currentDepState = await this.getDeployment(name, ns);
+        const dep = currentDepState.raw;
+        const existingAnnotations = dep.spec?.template?.metadata?.annotations || {};
+        const hasAnnotations = Boolean(dep.spec?.template?.metadata?.annotations);
+        const restartedAt = new Date().toISOString();
+
+        // Standard Kubernetes rolling restart: update restartedAt pod-template annotation
+        const patch = [
+            {
+                op: hasAnnotations ? "replace" : "add",
+                path: "/spec/template/metadata/annotations",
+                value: {
+                    ...existingAnnotations,
+                    "kubectl.kubernetes.io/restartedAt": restartedAt
                 }
             }
-        };
+        ];
 
-        const contentType = k8s.PatchUtils?.PATCH_FORMAT_STRATEGIC_MERGE_PATCH || "application/strategic-merge-patch+json";
-        const options = { headers: { "Content-Type": contentType } };
+        await this.appsApi.patchNamespacedDeployment({
+            name,
+            namespace: ns,
+            body: patch
+        });
 
-        try {
-            if (this.appsApi.patchNamespacedDeployment.length === 1) {
-                await this.appsApi.patchNamespacedDeployment({ name, namespace: ns, body: patch, options });
-            } else {
-                await this.appsApi.patchNamespacedDeployment(name, ns, patch, undefined, undefined, undefined, undefined, undefined, options);
-            }
-        } catch (patchErr) {
-            await this.appsApi.patchNamespacedDeployment({ name, namespace: ns, body: patch, options });
-        }
+        // Verify pod rollout and convergence
+        const convergence = await this.waitForRestartConvergence(name, ns, restartedAt, 25000, 1500);
 
         return {
             success: true,
             deployment: name,
             namespace: ns,
-            restartedAt: new Date().toISOString(),
-            message: `Rolling restart initiated for deployment "${name}" in namespace "${ns}"`
+            restartedAt,
+            converged: convergence.converged,
+            readyReplicas: convergence.readyReplicas,
+            message: `Rolling restart initiated for deployment "${name}" in namespace "${ns}" (rollout converged: ${convergence.converged})`
         };
     }
 
     // =========================================
-    // CONVERGENCE VERIFICATION
+    // CONVERGENCE VERIFICATION FOR SCALE
     // =========================================
-    async waitForDeploymentConvergence(name, expectedReplicas, namespace, maxWaitMs = 30000, pollIntervalMs = 2000) {
+    async waitForDeploymentConvergence(name, expectedReplicas, namespace, maxWaitMs = 30000, pollIntervalMs = 1500) {
         const ns = namespace || this.getDefaultNamespace();
         const startTime = Date.now();
 
@@ -661,15 +668,7 @@ class KubernetesService {
                     };
                 }
             } catch (err) {
-                console.warn(`Polling deployment "${name}" status:`, this.sanitizeError(err));
-                return {
-                    converged: false,
-                    readyReplicas: 0,
-                    availableReplicas: 0,
-                    desiredReplicas: expectedReplicas,
-                    elapsedMs: Date.now() - startTime,
-                    message: `Kubernetes convergence check failed: ${this.sanitizeError(err)}`
-                };
+                console.warn(`Transient polling notice for deployment "${name}":`, this.sanitizeError(err));
             }
 
             await new Promise((r) => setTimeout(r, pollIntervalMs));
@@ -677,10 +676,60 @@ class KubernetesService {
 
         const finalStatus = await this.getDeployment(name, ns).catch(() => ({ ready: 0, available: 0 }));
         return {
-            converged: false,
+            converged: finalStatus.ready === expectedReplicas,
             readyReplicas: finalStatus.ready,
             availableReplicas: finalStatus.available,
             desiredReplicas: expectedReplicas,
+            elapsedMs: Date.now() - startTime
+        };
+    }
+
+    // =========================================
+    // CONVERGENCE VERIFICATION FOR RESTART
+    // =========================================
+    async waitForRestartConvergence(name, namespace, restartedAt, maxWaitMs = 30000, pollIntervalMs = 1500) {
+        const ns = namespace || this.getDefaultNamespace();
+        const startTime = Date.now();
+
+        if (!this.checkConnection()) {
+            return {
+                converged: false,
+                readyReplicas: 0,
+                desiredReplicas: 0,
+                elapsedMs: 0,
+                message: "Kubernetes client not initialized"
+            };
+        }
+
+        console.log(`⏳ Waiting for deployment "${name}" rolling restart rollout to complete...`);
+
+        // Give deployment controller a moment to start cycling pods
+        await new Promise((r) => setTimeout(r, 2000));
+
+        while (Date.now() - startTime < maxWaitMs) {
+            try {
+                const status = await this.getDeployment(name, ns);
+                if (status.desired > 0 && status.ready === status.desired && status.available === status.desired) {
+                    console.log(`✅ Deployment "${name}" restart rollout completed: ${status.ready}/${status.desired} ready.`);
+                    return {
+                        converged: true,
+                        readyReplicas: status.ready,
+                        desiredReplicas: status.desired,
+                        elapsedMs: Date.now() - startTime
+                    };
+                }
+            } catch (err) {
+                console.warn(`Transient restart poll notice for "${name}":`, this.sanitizeError(err));
+            }
+
+            await new Promise((r) => setTimeout(r, pollIntervalMs));
+        }
+
+        const finalStatus = await this.getDeployment(name, ns).catch(() => ({ ready: 0, desired: 0 }));
+        return {
+            converged: finalStatus.desired > 0 && finalStatus.ready === finalStatus.desired,
+            readyReplicas: finalStatus.ready,
+            desiredReplicas: finalStatus.desired,
             elapsedMs: Date.now() - startTime
         };
     }

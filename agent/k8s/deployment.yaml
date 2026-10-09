@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudops-agent
+  namespace: cloudops-agent
+  labels:
+    app: cloudops-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudops-agent
+  template:
+    metadata:
+      labels:
+        app: cloudops-agent
+    spec:
+      serviceAccountName: cloudops-agent-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: agent
+          image: cloudops-agent:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLOUDOPS_URL
+              value: "http://host.docker.internal:5000"
+            - name: PROMETHEUS_URL
+              value: "http://prometheus.monitoring.svc.cluster.local:9090"
+            - name: AGENT_NAME
+              value: "production-cluster"
+            - name: AGENT_ENVIRONMENT
+              value: "production"
+            - name: ALLOWED_NAMESPACES
+              value: "cloudops,default"
+            - name: ENROLLMENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudops-agent-secret
+                  key: ENROLLMENT_TOKEN
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

@@ -172,36 +172,48 @@ export const getReliabilityOverview = async () => {
 // KUBERNETES APIs
 // =========================================
 
-export const getKubernetesOverview = async (namespace) => {
-    const url = namespace ? `/kubernetes/overview?namespace=${namespace}` : "/kubernetes/overview";
-    return apiFetch(url);
+export const getKubernetesOverview = async (namespace, connectionId) => {
+    const params = new URLSearchParams();
+    if (namespace) params.append("namespace", namespace);
+    if (connectionId && connectionId !== "local") params.append("connectionId", connectionId);
+    const qs = params.toString();
+    return apiFetch(qs ? `/kubernetes/overview?${qs}` : "/kubernetes/overview");
 };
 
-export const getKubernetesStatus = async () => {
-    return apiFetch("/kubernetes/status");
+export const getKubernetesStatus = async (connectionId) => {
+    return apiFetch(connectionId && connectionId !== "local" ? `/kubernetes/status?connectionId=${encodeURIComponent(connectionId)}` : "/kubernetes/status");
 };
 
-export const getKubernetesHealth = async () => {
-    return apiFetch("/kubernetes/health");
+export const getKubernetesHealth = async (connectionId) => {
+    return apiFetch(connectionId && connectionId !== "local" ? `/kubernetes/health?connectionId=${encodeURIComponent(connectionId)}` : "/kubernetes/health");
 };
 
-export const getKubernetesNodes = async () => {
-    return apiFetch("/kubernetes/nodes");
+export const getKubernetesNodes = async (connectionId) => {
+    return apiFetch(connectionId && connectionId !== "local" ? `/kubernetes/nodes?connectionId=${encodeURIComponent(connectionId)}` : "/kubernetes/nodes");
 };
 
-export const getKubernetesPods = async (namespace) => {
-    const url = namespace ? `/kubernetes/pods?namespace=${namespace}` : "/kubernetes/pods";
-    return apiFetch(url);
+export const getKubernetesPods = async (namespace, connectionId) => {
+    const params = new URLSearchParams();
+    if (namespace) params.append("namespace", namespace);
+    if (connectionId && connectionId !== "local") params.append("connectionId", connectionId);
+    const qs = params.toString();
+    return apiFetch(qs ? `/kubernetes/pods?${qs}` : "/kubernetes/pods");
 };
 
-export const getKubernetesDeployments = async (namespace) => {
-    const url = namespace ? `/kubernetes/deployments?namespace=${namespace}` : "/kubernetes/deployments";
-    return apiFetch(url);
+export const getKubernetesDeployments = async (namespace, connectionId) => {
+    const params = new URLSearchParams();
+    if (namespace) params.append("namespace", namespace);
+    if (connectionId && connectionId !== "local") params.append("connectionId", connectionId);
+    const qs = params.toString();
+    return apiFetch(qs ? `/kubernetes/deployments?${qs}` : "/kubernetes/deployments");
 };
 
-export const getKubernetesServices = async (namespace) => {
-    const url = namespace ? `/kubernetes/services?namespace=${namespace}` : "/kubernetes/services";
-    return apiFetch(url);
+export const getKubernetesServices = async (namespace, connectionId) => {
+    const params = new URLSearchParams();
+    if (namespace) params.append("namespace", namespace);
+    if (connectionId && connectionId !== "local") params.append("connectionId", connectionId);
+    const qs = params.toString();
+    return apiFetch(qs ? `/kubernetes/services?${qs}` : "/kubernetes/services");
 };
 
 export const executeKubernetesAction = async (actionData) => {
@@ -215,9 +227,13 @@ export const executeKubernetesAction = async (actionData) => {
 // OBSERVABILITY APIs
 // =========================================
 
-export const getObservabilityTelemetry = async (range = "30m", signal = null) => {
+export const getObservabilityTelemetry = async (range = "30m", signal = null, connectionId = null) => {
     const token = localStorage.getItem("token");
-    const response = await fetch(`${API_URL}/observability/telemetry?range=${range}`, {
+    let url = `${API_URL}/observability/telemetry?range=${range}`;
+    if (connectionId && connectionId !== "local") {
+        url += `&connectionId=${encodeURIComponent(connectionId)}`;
+    }
+    const response = await fetch(url, {
         signal,
         credentials: "include",
         headers: {
@@ -230,4 +246,35 @@ export const getObservabilityTelemetry = async (range = "30m", signal = null) =>
         throw new Error(result.message || "Failed to fetch observability telemetry");
     }
     return result;
+};
+
+// =========================================
+// INFRASTRUCTURE CONNECTION APIs
+// =========================================
+
+export const getInfrastructureConnections = async () => {
+    return apiFetch("/infrastructure/connections");
+};
+
+export const getInfrastructureConnectionById = async (id) => {
+    return apiFetch(`/infrastructure/connections/${id}`);
+};
+
+export const createInfrastructureConnection = async (connectionData) => {
+    return apiFetch("/infrastructure/connections", {
+        method: "POST",
+        body: JSON.stringify(connectionData)
+    });
+};
+
+export const revokeInfrastructureConnection = async (id) => {
+    return apiFetch(`/infrastructure/connections/${id}/revoke`, {
+        method: "POST"
+    });
+};
+
+export const deleteInfrastructureConnection = async (id) => {
+    return apiFetch(`/infrastructure/connections/${id}`, {
+        method: "DELETE"
+    });
 };

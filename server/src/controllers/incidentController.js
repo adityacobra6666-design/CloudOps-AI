@@ -14,9 +14,9 @@ exports.createIncident = async (req, res) => {
     try {
 
         // Whitelist allowed fields to prevent mass assignment
-        const { title, description, severity, source, category, status, server } = req.body;
+        const { title, description, severity, source, category, status, server, connectionId, environment } = req.body;
         const incident = await Incident.create({
-            title, description, severity, source, category, status, server
+            title, description, severity, source, category, status, server, connectionId, environment
         });
 
 

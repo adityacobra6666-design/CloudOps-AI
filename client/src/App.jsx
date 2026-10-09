@@ -21,6 +21,7 @@ import AIOperations from "./pages/AIOperations";
 import KubernetesPage from "./pages/KubernetesPage";
 import ReliabilityPage from "./pages/ReliabilityPage";
 import ObservabilityPage from "./pages/ObservabilityPage";
+import InfrastructureConnections from "./pages/InfrastructureConnections";
 import { useAuth } from "./context/AuthContext";
 
 import "./index.css";
@@ -137,6 +138,7 @@ function App() {
                         <Route path="ai-ops" element={<AIOperations />} />
                         <Route path="kubernetes" element={<KubernetesPage />} />
                         <Route path="reliability" element={<ReliabilityPage />} />
+                        <Route path="connections" element={<InfrastructureConnections />} />
                     </Route>
 
                     {/* FALLBACK ROUTE */}
