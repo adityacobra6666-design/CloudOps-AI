@@ -4,7 +4,11 @@
   "description": "CloudOps AI — RAG-Driven Autonomous Cloud Operations & Reliability Platform",
   "scripts": {
     "start:all": "./scripts/start.sh",
-    "stop:all": "./scripts/stop.sh"
+    "stop:all": "./scripts/stop.sh",
+    "deploy:prod": "./scripts/deploy-prod.sh",
+    "stop:prod": "./scripts/stop-prod.sh",
+    "health:check": "./scripts/health-check.sh",
+    "status": "./scripts/status.sh"
   },
   "keywords": [
     "cloudops",

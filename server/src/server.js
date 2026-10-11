@@ -9,12 +9,17 @@ const PORT = process.env.PORT || 5000;
 // VALIDATE REQUIRED ENV VARS
 // ================================
 
+const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
+if (mongoUri && !process.env.MONGO_URI) {
+    process.env.MONGO_URI = mongoUri;
+}
+
 const requiredEnvVars = ["MONGO_URI", "JWT_SECRET"];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
 
 if (missingVars.length > 0) {
     console.error(`❌ Missing required environment variables: ${missingVars.join(", ")}`);
-    console.error("   Please check your .env file or environment configuration.");
+    console.error("   Please check your .env file or environment configuration (MONGO_URI/MONGODB_URI, JWT_SECRET).");
     process.exit(1);
 }
 

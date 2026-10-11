@@ -1,0 +1,127 @@
+# ========================================================
+# CloudOps AI — Production Docker Compose Override
+# ========================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# ========================================================
+
+services:
+
+  # --------------------------------------------------------
+  # CLIENT: Production React SPA served via Nginx Reverse Proxy
+  # --------------------------------------------------------
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_API_URL: /api
+        VITE_PROMETHEUS_URL: ${VITE_PROMETHEUS_URL:-/prometheus}
+        VITE_GRAFANA_URL: ${VITE_GRAFANA_URL:-/grafana}
+
+    image: cloudops-ai-client:prod
+    container_name: cloudops-client
+    restart: always
+
+    environment:
+      NODE_ENV: production
+
+    # Override: Do NOT mount local source tree in production
+    volumes: !override []
+
+    # Expose only the unified public HTTP reverse-proxy port (default: 80)
+    ports: !override
+      - "${CLOUDOPS_PUBLIC_PORT:-80}:80"
+
+    depends_on:
+      server:
+        condition: service_healthy
+
+    networks:
+      - cloudops
+
+  # --------------------------------------------------------
+  # SERVER: Node.js Backend API
+  # --------------------------------------------------------
+  server:
+    container_name: cloudops-server
+    restart: always
+
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      IS_DOCKER: "true"
+
+    # Override: Remove local development host paths and source mounts
+    volumes: !override
+      - ./server/.env:/app/.env
+
+    # Bind server to localhost for host healthchecks; public access goes through Nginx
+    ports: !override
+      - "127.0.0.1:5000:5000"
+
+    depends_on:
+      mongo:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+    networks:
+      cloudops:
+        aliases:
+          - server
+          - cloudops-server
+
+  # --------------------------------------------------------
+  # MONGODB: Private to local host & docker network
+  # --------------------------------------------------------
+  mongo:
+    restart: always
+    ports: !override
+      - "127.0.0.1:27017:27017"
+
+  # --------------------------------------------------------
+  # OLLAMA: Private to local host & docker network
+  # --------------------------------------------------------
+  ollama:
+    restart: always
+    ports: !override
+      - "127.0.0.1:11434:11434"
+
+  # --------------------------------------------------------
+  # PROMETHEUS: Private to local host & docker network
+  # --------------------------------------------------------
+  prometheus:
+    restart: always
+    ports: !override
+      - "127.0.0.1:9090:9090"
+
+  # --------------------------------------------------------
+  # ALERTMANAGER: Private to local host & docker network
+  # --------------------------------------------------------
+  alertmanager:
+    restart: always
+    ports: !override
+      - "127.0.0.1:9093:9093"
+
+  # --------------------------------------------------------
+  # GRAFANA: Private to local host & docker network
+  # --------------------------------------------------------
+  grafana:
+    restart: always
+    ports: !override
+      - "127.0.0.1:3000:3000"
+
+  # --------------------------------------------------------
+  # NODE EXPORTER: Internal to prometheus only
+  # --------------------------------------------------------
+  node-exporter:
+    restart: always
+    ports: !override []
+
+  # --------------------------------------------------------
+  # CADVISOR: Internal to prometheus only
+  # --------------------------------------------------------
+  cadvisor:
+    restart: always
+    ports: !override []

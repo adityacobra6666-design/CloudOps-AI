@@ -85,6 +85,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$ROOT_DIR"
+if [ ! -f "server/.env" ]; then
+    echo -e "${YELLOW}[CloudOps] Creating server/.env from server/.env.example...${NC}"
+    cp server/.env.example server/.env
+fi
 docker compose up -d
 docker network connect minikube cloudops-server 2>/dev/null || true
 
