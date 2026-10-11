@@ -81,24 +81,32 @@ exports.getOverviewMetrics = async (req, res) => {
     }
 };
 
+const { checkPrometheusHealth, getPrometheusConfig } = require("../services/prometheus.service");
+
 // =========================================
 // GET SERVICE HEALTH
 // =========================================
 exports.getServicesHealth = async (req, res) => {
+    const isRenderOrProd = Boolean(process.env.RENDER || process.env.NODE_ENV === "production");
+    const config = getPrometheusConfig();
+
     const services = [
         { name: "Backend", status: "Healthy" },
         { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Healthy" : "Critical" },
-        { name: "Prometheus", status: "Degraded", url: PROMETHEUS_URL },
-        { name: "Grafana", status: "Degraded", url: GRAFANA_URL },
-        { name: "Alertmanager", status: "Degraded", url: ALERTMANAGER_URL },
-        { name: "Ollama", status: "Degraded", url: OLLAMA_URL }
+        { name: config.isCloud ? "Grafana Cloud Prometheus" : "Prometheus", status: "Unknown", provider: config.provider },
+        { name: "Grafana", status: isRenderOrProd ? "Unavailable" : "Degraded", url: GRAFANA_URL },
+        { name: "Alertmanager", status: isRenderOrProd ? "Unavailable" : "Degraded", url: ALERTMANAGER_URL },
+        { name: "Ollama", status: isRenderOrProd ? "Unavailable" : "Degraded", url: OLLAMA_URL }
     ];
 
     // Parallel ping checks for external services
     await Promise.allSettled([
-        axios.get(`${PROMETHEUS_URL}/-/healthy`, { timeout: 1500 })
-            .then(() => { services.find(s => s.name === "Prometheus").status = "Healthy"; })
-            .catch(() => {}),
+        checkPrometheusHealth().then((h) => {
+            const svc = services.find(s => s.name.includes("Prometheus"));
+            if (svc) {
+                svc.status = h.healthy ? "Healthy" : (h.isCloud ? "Critical" : (isRenderOrProd ? "Unavailable" : "Degraded"));
+            }
+        }),
 
         axios.get(`${GRAFANA_URL}/api/health`, { timeout: 1500 })
             .then(() => { services.find(s => s.name === "Grafana").status = "Healthy"; })
@@ -113,8 +121,11 @@ exports.getServicesHealth = async (req, res) => {
             .catch(() => {})
     ]);
 
-    const healthyCount = services.filter(s => s.status === "Healthy").length;
-    const globalStatus = healthyCount === services.length ? "HEALTHY" : healthyCount >= 3 ? "WARNING" : "CRITICAL";
+    const isMongoHealthy = mongoose.connection.readyState === 1;
+    const promSvc = services.find(s => s.name.includes("Prometheus"));
+    const isPromHealthy = promSvc && promSvc.status === "Healthy";
+
+    const globalStatus = isMongoHealthy && isPromHealthy ? "HEALTHY" : isMongoHealthy ? "WARNING" : "CRITICAL";
 
     res.json({
         success: true,
@@ -132,8 +143,8 @@ exports.getSystemHealth = async (req, res) => {
     let isPrometheusHealthy = false;
 
     try {
-        const resp = await axios.get(`${PROMETHEUS_URL}/-/healthy`, { timeout: 1500 });
-        isPrometheusHealthy = resp.status === 200;
+        const promHealth = await checkPrometheusHealth();
+        isPrometheusHealthy = promHealth.healthy;
     } catch (err) {}
 
     const status = isMongoHealthy && isPrometheusHealthy ? "HEALTHY" : isMongoHealthy ? "WARNING" : "CRITICAL";

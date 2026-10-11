@@ -264,3 +264,37 @@ docker exec cloudops-mongodb mongodump --archive=/data/db/backup-$(date +%F).arc
 | `Missing required environment variables` | `server/.env` is missing or lacks `JWT_SECRET`/`MONGO_URI` | Ensure `server/.env` exists and contains valid settings. |
 | `Ollama returns status: unavailable` | Ollama container is starting or model is not pulled | Run `docker exec cloudops-ollama ollama pull llama3.2:3b`. |
 | `Kubernetes status shows disconnected` | Kubeconfig not configured or no cluster reachable | CloudOps continues functioning. Connect a cluster via `KUBECONFIG` or the Outbound Agent. |
+
+---
+
+## 9. Render Deployment & Grafana Cloud Prometheus Integration
+
+When hosting the backend and frontend on **Render**, live metrics are streamed via **Grafana Cloud Prometheus**.
+
+### Required Architecture
+```
+React Frontend (Render Static Site)
+      ↓ (Authenticated Telemetry API calls: /api/observability/telemetry)
+Express Backend (Render Web Service)
+      ↓ (HTTP Basic Auth: Instance ID + metrics:read Access Policy Token)
+Grafana Cloud Prometheus API (/api/v1/query, /api/v1/query_range)
+```
+
+> 🔒 **Security Rules**:
+> - All Grafana Cloud credentials reside exclusively in the Render Backend Environment Variables.
+> - The frontend never accesses Grafana Cloud directly and receives zero credentials.
+> - Never add Grafana Cloud tokens to `VITE_` frontend environment variables.
+
+### Render Backend Environment Variables
+In the Render Dashboard for your **CloudOps Backend Web Service**, navigate to **Environment** and configure:
+
+| Environment Variable | Description | Example |
+| :--- | :--- | :--- |
+| `GRAFANA_CLOUD_PROMETHEUS_URL` | Base API/query URL for your Grafana Cloud hosted metrics (without trailing slashes) | `https://prometheus-prod-10-prod-us-central-0.grafana.net/api/prom` |
+| `GRAFANA_CLOUD_PROMETHEUS_USERNAME` | Grafana Cloud Prometheus instance ID / metrics username | `123456` |
+| `GRAFANA_CLOUD_PROMETHEUS_TOKEN` | Access Policy Token with `metrics:read` scope | `glc_eyJvIjoi...` |
+
+### How It Works:
+1. **Detection**: If `GRAFANA_CLOUD_PROMETHEUS_URL` is set, the backend automatically operates in `grafana_cloud` provider mode using HTTP Basic Auth.
+2. **Local Fallback**: If those variables are unset, the backend seamlessly falls back to `PROMETHEUS_URL` (default `http://prometheus:9090`) for local Docker development.
+3. **Data Availability**: If metrics (such as host node exporter metrics) are not ingested into Grafana Cloud, the backend reports `available: false` and the frontend gracefully displays `—` and `Unavailable` without fabricating false zero telemetry.

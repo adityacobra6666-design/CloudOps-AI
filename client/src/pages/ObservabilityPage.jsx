@@ -26,6 +26,7 @@ export default function ObservabilityPage() {
     const [isRefreshing, setIsRefreshing] = useState(false);
 
     const abortControllerRef = useRef(null);
+    const isFetchingRef = useRef(false);
 
     // Load available connections
     useEffect(() => {
@@ -41,6 +42,9 @@ export default function ObservabilityPage() {
     }, []);
 
     const fetchTelemetryData = async (selectedRange, showGlobalLoading = false, connId = selectedEnvironment) => {
+        if (isFetchingRef.current) return;
+        isFetchingRef.current = true;
+
         if (showGlobalLoading) setLoading(true);
         setIsRefreshing(true);
         setError(null);
@@ -65,6 +69,7 @@ export default function ObservabilityPage() {
         } finally {
             setLoading(false);
             setIsRefreshing(false);
+            isFetchingRef.current = false;
         }
     };
 
@@ -73,11 +78,11 @@ export default function ObservabilityPage() {
         fetchTelemetryData(range, true, selectedEnvironment);
     }, [range, selectedEnvironment]);
 
-    // Auto-refresh timer every 5 seconds
+    // Auto-refresh timer every 20 seconds (preventing overlapping requests)
     useEffect(() => {
         const intervalId = setInterval(() => {
             fetchTelemetryData(range, false);
-        }, 5000);
+        }, 20000);
 
         return () => {
             clearInterval(intervalId);
@@ -126,6 +131,8 @@ export default function ObservabilityPage() {
             case "Healthy": return "healthy";
             case "Warning": return "warning";
             case "Critical": return "critical";
+            case "Unavailable":
+            case "Not configured": return "unknown";
             default: return "unknown";
         }
     };
@@ -136,6 +143,8 @@ export default function ObservabilityPage() {
             case "Degraded":
             case "Warning": return "#F59E0B";
             case "Critical": return "#DC2626";
+            case "Unavailable":
+            case "Not configured":
             default: return "#64748B";
         }
     };
@@ -156,6 +165,25 @@ export default function ObservabilityPage() {
                     <p className="obs-page-subtitle">
                         Real-time infrastructure and application telemetry powered by Prometheus.
                     </p>
+                    <div style={{ display: "flex", gap: "10px", alignItems: "center", marginTop: "6px", fontSize: "0.85rem", flexWrap: "wrap" }}>
+                        <span style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            padding: "3px 10px",
+                            borderRadius: "6px",
+                            fontWeight: "600",
+                            backgroundColor: telemetry?.provider === "grafana_cloud" ? "rgba(249, 115, 22, 0.15)" : "rgba(59, 130, 246, 0.15)",
+                            color: telemetry?.provider === "grafana_cloud" ? "#EA580C" : "#2563EB",
+                            border: telemetry?.provider === "grafana_cloud" ? "1px solid rgba(249, 115, 22, 0.3)" : "1px solid rgba(59, 130, 246, 0.3)"
+                        }}>
+                            {telemetry?.providerLabel || (telemetry?.provider === "grafana_cloud" ? "☁️ Grafana Cloud Prometheus" : "💻 Local Prometheus")}
+                        </span>
+                        {telemetry?.timestamp && (
+                            <span style={{ color: isDark ? "#94A3B8" : "#64748B" }}>
+                                Last updated: <strong>{new Date(telemetry.timestamp).toLocaleTimeString()}</strong>
+                            </span>
+                        )}
+                    </div>
                 </div>
 
                 <div className="obs-toolbar">
@@ -221,37 +249,66 @@ export default function ObservabilityPage() {
                 </div>
             ) : (
                 <>
+                    {/* PROVIDER NOTICE BANNER */}
+                    {telemetry?.providerError && (
+                        <div style={{
+                            marginBottom: "1.25rem",
+                            padding: "0.75rem 1rem",
+                            borderRadius: "8px",
+                            backgroundColor: "rgba(245, 158, 11, 0.12)",
+                            border: "1px solid rgba(245, 158, 11, 0.35)",
+                            color: "#D97706",
+                            fontSize: "0.875rem",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px"
+                        }}>
+                            <span style={{ fontSize: "1.1rem" }}>⚠️</span>
+                            <span><strong>Metrics Notice:</strong> {telemetry.providerError}</span>
+                        </div>
+                    )}
+
                     {/* TOP METRIC SUMMARY CARDS GRID */}
                     <div className="obs-metrics-grid">
                         {/* CPU CARD */}
                         <div className="obs-metric-card">
                             <div className="obs-card-top">
-                                <span className="obs-metric-name">CPU Usage</span>
+                                <span className="obs-metric-name">{summary.cpu?.label || "CPU Usage"}</span>
                                 <span className={`obs-status-badge ${getStatusClass(summary.cpu?.status)}`}>
                                     {summary.cpu?.status || "Healthy"}
                                 </span>
                             </div>
                             <div className="obs-metric-value-row">
-                                <span className="obs-metric-value">{summary.cpu?.value ?? 0}%</span>
+                                <span className="obs-metric-value">
+                                    {summary.cpu?.available !== false && summary.cpu?.value !== null && summary.cpu?.value !== undefined
+                                        ? `${summary.cpu.value}%`
+                                        : "—"}
+                                </span>
                             </div>
                             <div className="obs-card-bottom">
-                                <span className="obs-pulse-dot"></span> Live
+                                <span className={summary.cpu?.available !== false ? "obs-pulse-dot" : "obs-pulse-dot-stale"}></span>
+                                {summary.cpu?.available !== false ? "Live" : "Unavailable"}
                             </div>
                         </div>
 
                         {/* MEMORY CARD */}
                         <div className="obs-metric-card">
                             <div className="obs-card-top">
-                                <span className="obs-metric-name">Memory Usage</span>
+                                <span className="obs-metric-name">{summary.memory?.label || "Memory Usage"}</span>
                                 <span className={`obs-status-badge ${getStatusClass(summary.memory?.status)}`}>
                                     {summary.memory?.status || "Healthy"}
                                 </span>
                             </div>
                             <div className="obs-metric-value-row">
-                                <span className="obs-metric-value">{summary.memory?.value ?? 0}%</span>
+                                <span className="obs-metric-value">
+                                    {summary.memory?.available !== false && summary.memory?.value !== null && summary.memory?.value !== undefined
+                                        ? `${summary.memory.value}%`
+                                        : "—"}
+                                </span>
                             </div>
                             <div className="obs-card-bottom">
-                                <span className="obs-pulse-dot"></span> Live
+                                <span className={summary.memory?.available !== false ? "obs-pulse-dot" : "obs-pulse-dot-stale"}></span>
+                                {summary.memory?.available !== false ? "Live" : "Unavailable"}
                             </div>
                         </div>
 
@@ -264,10 +321,15 @@ export default function ObservabilityPage() {
                                 </span>
                             </div>
                             <div className="obs-metric-value-row">
-                                <span className="obs-metric-value">{summary.requestRate?.value ?? 0} req/s</span>
+                                <span className="obs-metric-value">
+                                    {summary.requestRate?.available !== false && summary.requestRate?.value !== null && summary.requestRate?.value !== undefined
+                                        ? `${summary.requestRate.value} req/s`
+                                        : "—"}
+                                </span>
                             </div>
                             <div className="obs-card-bottom">
-                                <span className="obs-pulse-dot"></span> Live
+                                <span className={summary.requestRate?.available !== false ? "obs-pulse-dot" : "obs-pulse-dot-stale"}></span>
+                                {summary.requestRate?.available !== false ? "Live" : "Unavailable"}
                             </div>
                         </div>
 
@@ -280,10 +342,15 @@ export default function ObservabilityPage() {
                                 </span>
                             </div>
                             <div className="obs-metric-value-row">
-                                <span className="obs-metric-value">{summary.errorRate?.value ?? 0}%</span>
+                                <span className="obs-metric-value">
+                                    {summary.errorRate?.available !== false && summary.errorRate?.value !== null && summary.errorRate?.value !== undefined
+                                        ? `${summary.errorRate.value}%`
+                                        : "—"}
+                                </span>
                             </div>
                             <div className="obs-card-bottom">
-                                <span className="obs-pulse-dot"></span> Live
+                                <span className={summary.errorRate?.available !== false ? "obs-pulse-dot" : "obs-pulse-dot-stale"}></span>
+                                {summary.errorRate?.available !== false ? "Live" : "Unavailable"}
                             </div>
                         </div>
 
@@ -296,10 +363,15 @@ export default function ObservabilityPage() {
                                 </span>
                             </div>
                             <div className="obs-metric-value-row">
-                                <span className="obs-metric-value">{summary.p95Latency?.value ?? 0} ms</span>
+                                <span className="obs-metric-value">
+                                    {summary.p95Latency?.available !== false && summary.p95Latency?.value !== null && summary.p95Latency?.value !== undefined
+                                        ? `${summary.p95Latency.value} ms`
+                                        : "—"}
+                                </span>
                             </div>
                             <div className="obs-card-bottom">
-                                <span className="obs-pulse-dot"></span> Live
+                                <span className={summary.p95Latency?.available !== false ? "obs-pulse-dot" : "obs-pulse-dot-stale"}></span>
+                                {summary.p95Latency?.available !== false ? "Live" : "Unavailable"}
                             </div>
                         </div>
 
@@ -312,10 +384,15 @@ export default function ObservabilityPage() {
                                 </span>
                             </div>
                             <div className="obs-metric-value-row">
-                                <span className="obs-metric-value">{summary.network?.value ?? 0} {summary.network?.unit || "KB/s"}</span>
+                                <span className="obs-metric-value">
+                                    {summary.network?.available !== false && summary.network?.value !== null && summary.network?.value !== undefined
+                                        ? `${summary.network.value} ${summary.network.unit || "KB/s"}`
+                                        : "—"}
+                                </span>
                             </div>
                             <div className="obs-card-bottom">
-                                <span className="obs-pulse-dot"></span> Live
+                                <span className={summary.network?.available !== false ? "obs-pulse-dot" : "obs-pulse-dot-stale"}></span>
+                                {summary.network?.available !== false ? "Live" : "Unavailable"}
                             </div>
                         </div>
                     </div>
@@ -483,7 +560,7 @@ export default function ObservabilityPage() {
                         </div>
                         <div className="obs-service-grid">
                             {services.map((svc) => (
-                                <div key={svc.name} className="obs-service-item">
+                                <div key={svc.name} className="obs-service-item" title={svc.details || undefined}>
                                     <span className="obs-service-name">{svc.name}</span>
                                     <div className="obs-service-status-row">
                                         <span

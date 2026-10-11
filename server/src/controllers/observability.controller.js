@@ -1,6 +1,12 @@
 const mongoose = require("mongoose");
 const axios = require("axios");
-const { queryInstant, queryRange, PROMETHEUS_URL } = require("../services/prometheus.service");
+const {
+    queryInstant,
+    queryRange,
+    checkPrometheusHealth,
+    getPrometheusConfig,
+    PROMETHEUS_URL
+} = require("../services/prometheus.service");
 const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
 
 const GRAFANA_URL = process.env.GRAFANA_URL || "http://grafana:3000";
@@ -9,6 +15,7 @@ const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 
 /**
  * Range parameter helper
+ * Validates and maps user-requested time ranges to duration and sampling step
  */
 function parseRangeParams(rangeStr) {
     const validRanges = {
@@ -38,27 +45,31 @@ const InfrastructureConnection = require("../models/infrastructureConnection.mod
 function mergeNetworkSeries(rxSeries, txSeries) {
     const map = new Map();
 
-    for (const item of rxSeries) {
-        map.set(item.timestamp, {
-            timestamp: item.timestamp,
-            time: item.time,
-            fullTime: item.fullTime,
-            rx: item.value,
-            tx: 0
-        });
-    }
-
-    for (const item of txSeries) {
-        if (map.has(item.timestamp)) {
-            map.get(item.timestamp).tx = item.value;
-        } else {
+    if (Array.isArray(rxSeries)) {
+        for (const item of rxSeries) {
             map.set(item.timestamp, {
                 timestamp: item.timestamp,
                 time: item.time,
                 fullTime: item.fullTime,
-                rx: 0,
-                tx: item.value
+                rx: item.value,
+                tx: 0
             });
+        }
+    }
+
+    if (Array.isArray(txSeries)) {
+        for (const item of txSeries) {
+            if (map.has(item.timestamp)) {
+                map.get(item.timestamp).tx = item.value;
+            } else {
+                map.set(item.timestamp, {
+                    timestamp: item.timestamp,
+                    time: item.time,
+                    fullTime: item.fullTime,
+                    rx: 0,
+                    tx: item.value
+                });
+            }
         }
     }
 
@@ -91,7 +102,6 @@ exports.getTelemetry = async (req, res) => {
                 const netTxVal = safeNum(metrics.networkTx);
                 const totalNetVal = netRxVal + netTxVal;
 
-                // Build a recent history series for charts based on current telemetry
                 const now = Math.floor(Date.now() / 1000);
                 const sampleTimes = [now - 120, now - 90, now - 60, now - 30, now];
                 const makeSeries = (val) => sampleTimes.map(ts => ({
@@ -112,40 +122,50 @@ exports.getTelemetry = async (req, res) => {
                     environment: conn.environment,
                     connectionName: conn.name,
                     status: conn.status,
+                    provider: "connected_agent",
+                    providerLabel: `Agent: ${conn.name}`,
                     range: req.query.range || "30m",
                     timestamp: conn.telemetry?.recordedAt || new Date().toISOString(),
                     summary: {
                         cpu: {
                             value: parseFloat(cpuVal.toFixed(1)),
                             unit: "%",
-                            status: cpuVal > 85 ? "Critical" : cpuVal > 70 ? "Warning" : "Healthy"
+                            status: cpuVal > 85 ? "Critical" : cpuVal > 70 ? "Warning" : "Healthy",
+                            available: true,
+                            label: "Agent CPU"
                         },
                         memory: {
                             value: parseFloat(memVal.toFixed(1)),
                             unit: "%",
-                            status: memVal > 90 ? "Critical" : memVal > 75 ? "Warning" : "Healthy"
+                            status: memVal > 90 ? "Critical" : memVal > 75 ? "Warning" : "Healthy",
+                            available: true,
+                            label: "Agent Memory"
                         },
                         requestRate: {
                             value: parseFloat(reqRateVal.toFixed(2)),
                             unit: "req/s",
-                            status: "Healthy"
+                            status: "Healthy",
+                            available: true
                         },
                         errorRate: {
                             value: parseFloat(errRateVal.toFixed(2)),
                             unit: "%",
-                            status: errRateVal > 5 ? "Critical" : errRateVal > 1 ? "Warning" : "Healthy"
+                            status: errRateVal > 5 ? "Critical" : errRateVal > 1 ? "Warning" : "Healthy",
+                            available: true
                         },
                         p95Latency: {
                             value: Math.round(p95Val),
                             unit: "ms",
-                            status: p95Val > 500 ? "Critical" : p95Val > 200 ? "Warning" : "Healthy"
+                            status: p95Val > 500 ? "Critical" : p95Val > 200 ? "Warning" : "Healthy",
+                            available: true
                         },
                         network: {
                             value: totalNetVal > 1024 ? parseFloat((totalNetVal / 1024).toFixed(2)) : parseFloat(totalNetVal.toFixed(1)),
                             unit: totalNetVal > 1024 ? "MB/s" : "KB/s",
                             rx: parseFloat(netRxVal.toFixed(1)),
                             tx: parseFloat(netTxVal.toFixed(1)),
-                            status: "Healthy"
+                            status: "Healthy",
+                            available: true
                         }
                     },
                     metrics: {
@@ -168,128 +188,241 @@ exports.getTelemetry = async (req, res) => {
         }
 
         const { rangeKey, start, end, step } = parseRangeParams(req.query.range);
+        const config = getPrometheusConfig();
 
-        // PromQL queries
-        const qCpuInstant = `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`;
-        const qMemInstant = `100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))`;
-        const qReqRateInstant = `sum(rate(cloudops_http_requests_total[1m])) or vector(0)`;
-        const qErrRateInstant = `((sum(rate(cloudops_http_requests_total{status_code=~"5.."}[1m])) or vector(0)) / clamp_min(sum(rate(cloudops_http_requests_total[1m])) or vector(0.001), 0.001)) * 100`;
-        const qP95LatencyInstant = `(histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) or vector(0)) * 1000`;
+        // 1. Metric Queries Definition
+        // Host queries
+        const qHostCpuInstant = `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`;
+        const qHostCpuRange = `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`;
+        const qProcessCpuInstant = `sum(rate(process_cpu_seconds_total[1m])) * 100`;
+        const qProcessCpuRange = `sum(rate(process_cpu_seconds_total[1m])) * 100`;
+
+        const qHostMemInstant = `100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))`;
+        const qHostMemRange = `100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))`;
+        const qProcessMemInstant = `100 * (nodejs_heap_size_used_bytes / nodejs_heap_size_total_bytes)`;
+        const qProcessMemRange = `100 * (nodejs_heap_size_used_bytes / nodejs_heap_size_total_bytes)`;
+
+        // Application HTTP queries (rates in req/s, error rate %, latency in ms)
+        const qReqRateInstant = `sum(rate(cloudops_http_requests_total[1m]))`;
+        const qReqRateRange = `sum(rate(cloudops_http_requests_total[2m]))`;
+
+        // If requests exist, compute 5xx percentage (0% if no 5xx); if no requests exist at all, expression yields no data
+        const qErrRateInstant = `((sum(rate(cloudops_http_requests_total{status_code=~"5.."}[1m])) or (0 * sum(rate(cloudops_http_requests_total[1m])))) / sum(rate(cloudops_http_requests_total[1m]))) * 100`;
+        const qErrRateRange = `((sum(rate(cloudops_http_requests_total{status_code=~"5.."}[2m])) or (0 * sum(rate(cloudops_http_requests_total[2m])))) / sum(rate(cloudops_http_requests_total[2m]))) * 100`;
+
+        const qP95LatencyInstant = `histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) * 1000`;
+        const qP95LatencyRange = `histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) * 1000`;
+
+        // Container network queries (KB/s)
         const qNetRxInstant = `sum(rate(container_network_receive_bytes_total{name=~".+"}[1m])) / 1024`;
         const qNetTxInstant = `sum(rate(container_network_transmit_bytes_total{name=~".+"}[1m])) / 1024`;
-
-        const qCpuRange = `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`;
-        const qMemRange = `100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))`;
-        const qReqRateRange = `sum(rate(cloudops_http_requests_total[2m])) or vector(0)`;
-        const qErrRateRange = `((sum(rate(cloudops_http_requests_total{status_code=~"5.."}[2m])) or vector(0)) / clamp_min(sum(rate(cloudops_http_requests_total[2m])) or vector(0.001), 0.001)) * 100`;
-        const qP95LatencyRange = `(histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le)) or vector(0)) * 1000`;
         const qNetRxRange = `sum(rate(container_network_receive_bytes_total{name=~".+"}[1m])) / 1024`;
         const qNetTxRange = `sum(rate(container_network_transmit_bytes_total{name=~".+"}[1m])) / 1024`;
 
-        // Execute queries in parallel
-        const [
-            cpuVal, memVal, reqRateVal, errRateVal, p95Val, netRxVal, netTxVal,
-            cpuSeries, memSeries, reqRateSeries, errRateSeries, p95Series, netRxSeries, netTxSeries
-        ] = await Promise.all([
-            queryInstant(qCpuInstant),
-            queryInstant(qMemInstant),
-            queryInstant(qReqRateInstant),
-            queryInstant(qErrRateInstant),
-            queryInstant(qP95LatencyInstant),
-            queryInstant(qNetRxInstant),
-            queryInstant(qNetTxInstant),
+        // 2. Execute Prometheus queries in parallel with fault tolerance
+        let queryResults = {};
+        let providerError = config.isValid ? null : config.configError;
 
-            queryRange(qCpuRange, start, end, step),
-            queryRange(qMemRange, start, end, step),
-            queryRange(qReqRateRange, start, end, step),
-            queryRange(qErrRateRange, start, end, step),
-            queryRange(qP95LatencyRange, start, end, step),
-            queryRange(qNetRxRange, start, end, step),
-            queryRange(qNetTxRange, start, end, step)
-        ]);
+        if (config.isValid) {
+            const queryKeys = [
+                "hostCpuInstant", "procCpuInstant",
+                "hostMemInstant", "procMemInstant",
+                "reqRateInstant", "errRateInstant", "p95Instant",
+                "netRxInstant", "netTxInstant",
+                "hostCpuRange", "procCpuRange",
+                "hostMemRange", "procMemRange",
+                "reqRateRange", "errRateRange", "p95Range",
+                "netRxRange", "netTxRange"
+            ];
 
-        // Service Health checks
+            const promises = [
+                queryInstant(qHostCpuInstant),
+                queryInstant(qProcessCpuInstant),
+                queryInstant(qHostMemInstant),
+                queryInstant(qProcessMemInstant),
+                queryInstant(qReqRateInstant),
+                queryInstant(qErrRateInstant),
+                queryInstant(qP95LatencyInstant),
+                queryInstant(qNetRxInstant),
+                queryInstant(qNetTxInstant),
+                queryRange(qHostCpuRange, start, end, step),
+                queryRange(qProcessCpuRange, start, end, step),
+                queryRange(qHostMemRange, start, end, step),
+                queryRange(qProcessMemRange, start, end, step),
+                queryRange(qReqRateRange, start, end, step),
+                queryRange(qErrRateRange, start, end, step),
+                queryRange(qP95LatencyRange, start, end, step),
+                queryRange(qNetRxRange, start, end, step),
+                queryRange(qNetTxRange, start, end, step)
+            ];
+
+            const settled = await Promise.allSettled(promises);
+            settled.forEach((res, idx) => {
+                const key = queryKeys[idx];
+                if (res.status === "fulfilled") {
+                    queryResults[key] = res.value;
+                } else {
+                    queryResults[key] = key.endsWith("Range") ? [] : null;
+                    if (!providerError) {
+                        providerError = res.reason?.message || "Prometheus query failed";
+                    }
+                }
+            });
+        }
+
+        // 3. Process CPU metric (Host > Process fallback > Unavailable)
+        let cpuValue = null;
+        let cpuLabel = "CPU Usage";
+        let cpuSeries = [];
+        if (queryResults.hostCpuInstant !== null && queryResults.hostCpuInstant !== undefined) {
+            cpuValue = queryResults.hostCpuInstant;
+            cpuLabel = "Host CPU";
+            cpuSeries = queryResults.hostCpuRange || [];
+        } else if (queryResults.procCpuInstant !== null && queryResults.procCpuInstant !== undefined) {
+            cpuValue = queryResults.procCpuInstant;
+            cpuLabel = "Process CPU";
+            cpuSeries = queryResults.procCpuRange || [];
+        }
+
+        // 4. Process Memory metric (Host > Process Heap fallback > Unavailable)
+        let memValue = null;
+        let memLabel = "Memory Usage";
+        let memSeries = [];
+        if (queryResults.hostMemInstant !== null && queryResults.hostMemInstant !== undefined) {
+            memValue = queryResults.hostMemInstant;
+            memLabel = "Host Memory";
+            memSeries = queryResults.hostMemRange || [];
+        } else if (queryResults.procMemInstant !== null && queryResults.procMemInstant !== undefined) {
+            memValue = queryResults.procMemInstant;
+            memLabel = "Process Heap";
+            memSeries = queryResults.procMemRange || [];
+        }
+
+        // 5. Process Request Rate
+        const reqRateValue = queryResults.reqRateInstant !== null && queryResults.reqRateInstant !== undefined ? queryResults.reqRateInstant : null;
+        const reqRateSeries = queryResults.reqRateRange || [];
+
+        // 6. Process Error Rate
+        const errRateValue = queryResults.errRateInstant !== null && queryResults.errRateInstant !== undefined ? queryResults.errRateInstant : null;
+        const errRateSeries = queryResults.errRateRange || [];
+
+        // 7. Process P95 Latency
+        const p95Value = queryResults.p95Instant !== null && queryResults.p95Instant !== undefined && !isNaN(queryResults.p95Instant) ? queryResults.p95Instant : null;
+        const p95Series = queryResults.p95Range || [];
+
+        // 8. Process Container Network
+        const netRxValue = queryResults.netRxInstant !== null && queryResults.netRxInstant !== undefined ? queryResults.netRxInstant : null;
+        const netTxValue = queryResults.netTxInstant !== null && queryResults.netTxInstant !== undefined ? queryResults.netTxInstant : null;
+        const netRxSeries = queryResults.netRxRange || [];
+        const netTxSeries = queryResults.netTxRange || [];
+        const netMerged = mergeNetworkSeries(netRxSeries, netTxSeries);
+
+        let totalNetVal = null;
+        if (netRxValue !== null || netTxValue !== null) {
+            totalNetVal = (netRxValue || 0) + (netTxValue || 0);
+        }
+
+        // Helper to format numeric values safely
+        const round = (val, dec = 1) => (val !== null && isFinite(val) ? parseFloat(val.toFixed(dec)) : null);
+
+        // 9. Service Health checks
+        const isRenderOrProd = Boolean(process.env.RENDER || process.env.NODE_ENV === "production");
+        const promHealth = await checkPrometheusHealth();
+
         const services = [
             { name: "Backend", status: "Healthy" },
             { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Healthy" : "Critical" },
-            { name: "Prometheus", status: "Unknown" },
-            { name: "Alertmanager", status: "Unknown" },
-            { name: "Ollama", status: "Unknown" },
-            { name: "Kubernetes", status: "Unknown" }
+            {
+                name: config.isCloud ? "Grafana Cloud Prometheus" : "Prometheus",
+                status: promHealth.healthy ? "Healthy" : (config.isCloud ? "Critical" : (isRenderOrProd ? "Unavailable" : "Critical")),
+                details: promHealth.error || (promHealth.healthy ? "Connected" : "Unreachable")
+            },
+            { name: "Alertmanager", status: "Unavailable" },
+            { name: "Ollama", status: "Unavailable" },
+            { name: "Kubernetes", status: "Unavailable" }
         ];
 
+        // Ping optional services without throwing or failing main telemetry
         await Promise.allSettled([
-            axios.get(`${PROMETHEUS_URL}/-/healthy`, { timeout: 1500 })
-                .then(() => { services.find(s => s.name === "Prometheus").status = "Healthy"; })
-                .catch(() => { services.find(s => s.name === "Prometheus").status = "Critical"; }),
-
             axios.get(`${ALERTMANAGER_URL}/-/healthy`, { timeout: 1500 })
-                .then(() => { services.find(s => s.name === "Alertmanager").status = "Healthy"; })
-                .catch(() => { services.find(s => s.name === "Alertmanager").status = "Critical"; }),
+                .then(() => {
+                    const svc = services.find(s => s.name === "Alertmanager");
+                    if (svc) svc.status = "Healthy";
+                })
+                .catch(() => {
+                    const svc = services.find(s => s.name === "Alertmanager");
+                    if (svc) svc.status = isRenderOrProd ? "Unavailable" : "Degraded";
+                }),
 
             axios.get(`${OLLAMA_URL}/api/version`, { timeout: 1500 })
-                .then(() => { services.find(s => s.name === "Ollama").status = "Healthy"; })
-                .catch(() => { services.find(s => s.name === "Ollama").status = "Critical"; }),
+                .then(() => {
+                    const svc = services.find(s => s.name === "Ollama");
+                    if (svc) svc.status = "Healthy";
+                })
+                .catch(() => {
+                    const svc = services.find(s => s.name === "Ollama");
+                    if (svc) svc.status = isRenderOrProd ? "Unavailable" : "Degraded";
+                }),
 
             kubernetesService.getClusterStatus()
                 .then((k8sStatus) => {
-                    services.find(s => s.name === "Kubernetes").status = k8sStatus.connected ? "Healthy" : "Degraded";
+                    const svc = services.find(s => s.name === "Kubernetes");
+                    if (svc) svc.status = k8sStatus.connected ? "Healthy" : (isRenderOrProd ? "Not configured" : "Degraded");
                 })
-                .catch(() => { services.find(s => s.name === "Kubernetes").status = "Critical"; })
+                .catch(() => {
+                    const svc = services.find(s => s.name === "Kubernetes");
+                    if (svc) svc.status = isRenderOrProd ? "Not configured" : "Degraded";
+                })
         ]);
 
-        // Safe number helper to prevent NaN crashes
-        const safe = (val, fallback = 0) => {
-            const n = parseFloat(val);
-            return isNaN(n) || !isFinite(n) ? fallback : n;
-        };
-
-        const safeCpu = safe(cpuVal);
-        const safeMem = safe(memVal);
-        const safeReqRate = safe(reqRateVal);
-        const safeErrRate = safe(errRateVal);
-        const safeP95 = safe(p95Val);
-        const safeNetRx = safe(netRxVal);
-        const safeNetTx = safe(netTxVal);
-        const totalNetVal = safeNetRx + safeNetTx;
-
-        res.json({
+        return res.json({
             success: true,
+            provider: config.provider,
+            providerLabel: config.isCloud ? "Grafana Cloud Prometheus" : "Local Prometheus",
+            providerError,
             range: rangeKey,
             step,
             timestamp: new Date().toISOString(),
             summary: {
                 cpu: {
-                    value: parseFloat(safeCpu.toFixed(1)),
+                    value: round(cpuValue, 1),
                     unit: "%",
-                    status: safeCpu > 85 ? "Critical" : safeCpu > 70 ? "Warning" : "Healthy"
+                    status: cpuValue !== null ? (cpuValue > 85 ? "Critical" : cpuValue > 70 ? "Warning" : "Healthy") : "Unavailable",
+                    available: cpuValue !== null,
+                    label: cpuLabel
                 },
                 memory: {
-                    value: parseFloat(safeMem.toFixed(1)),
+                    value: round(memValue, 1),
                     unit: "%",
-                    status: safeMem > 90 ? "Critical" : safeMem > 75 ? "Warning" : "Healthy"
+                    status: memValue !== null ? (memValue > 90 ? "Critical" : memValue > 75 ? "Warning" : "Healthy") : "Unavailable",
+                    available: memValue !== null,
+                    label: memLabel
                 },
                 requestRate: {
-                    value: parseFloat(safeReqRate.toFixed(2)),
+                    value: round(reqRateValue, 2),
                     unit: "req/s",
-                    status: "Healthy"
+                    status: reqRateValue !== null ? "Healthy" : "Unavailable",
+                    available: reqRateValue !== null
                 },
                 errorRate: {
-                    value: parseFloat(safeErrRate.toFixed(2)),
+                    value: round(errRateValue, 2),
                     unit: "%",
-                    status: safeErrRate > 5 ? "Critical" : safeErrRate > 1 ? "Warning" : "Healthy"
+                    status: errRateValue !== null ? (errRateValue > 5 ? "Critical" : errRateValue > 1 ? "Warning" : "Healthy") : "Unavailable",
+                    available: errRateValue !== null
                 },
                 p95Latency: {
-                    value: Math.round(safeP95),
+                    value: p95Value !== null ? Math.round(p95Value) : null,
                     unit: "ms",
-                    status: safeP95 > 500 ? "Critical" : safeP95 > 200 ? "Warning" : "Healthy"
+                    status: p95Value !== null ? (p95Value > 500 ? "Critical" : p95Value > 200 ? "Warning" : "Healthy") : "Unavailable",
+                    available: p95Value !== null
                 },
                 network: {
-                    value: totalNetVal > 1024 ? parseFloat((totalNetVal / 1024).toFixed(2)) : parseFloat(totalNetVal.toFixed(1)),
-                    unit: totalNetVal > 1024 ? "MB/s" : "KB/s",
-                    rx: parseFloat(safeNetRx.toFixed(1)),
-                    tx: parseFloat(safeNetTx.toFixed(1)),
-                    status: "Healthy"
+                    value: totalNetVal !== null ? (totalNetVal > 1024 ? round(totalNetVal / 1024, 2) : round(totalNetVal, 1)) : null,
+                    unit: totalNetVal !== null && totalNetVal > 1024 ? "MB/s" : "KB/s",
+                    rx: round(netRxValue, 1),
+                    tx: round(netTxValue, 1),
+                    status: totalNetVal !== null ? "Healthy" : "Unavailable",
+                    available: totalNetVal !== null
                 }
             },
             metrics: {
@@ -298,13 +431,13 @@ exports.getTelemetry = async (req, res) => {
                 requestRate: reqRateSeries,
                 errorRate: errRateSeries,
                 p95Latency: p95Series,
-                network: mergeNetworkSeries(netRxSeries, netTxSeries)
+                network: netMerged
             },
             services
         });
     } catch (error) {
         console.error("Observability Controller Error:", error.message);
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Failed to fetch observability telemetry"
         });

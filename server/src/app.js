@@ -136,7 +136,7 @@ app.get("/", (req, res) => {
 
 app.get(["/health", "/api/health"], async (req, res) => {
     const axios = require("axios");
-    const PROMETHEUS_URL = process.env.PROMETHEUS_URL || "http://prometheus:9090";
+    const { checkPrometheusHealth } = require("./services/prometheus.service");
     const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 
     const isDbHealthy = mongoose.connection.readyState === 1;
@@ -145,8 +145,9 @@ app.get(["/health", "/api/health"], async (req, res) => {
     let isOllamaHealthy = false;
 
     await Promise.allSettled([
-        axios.get(`${PROMETHEUS_URL}/-/healthy`, { timeout: 1500 })
-            .then(() => { isPrometheusHealthy = true; }).catch(() => {}),
+        checkPrometheusHealth()
+            .then((res) => { isPrometheusHealthy = res.healthy; })
+            .catch(() => {}),
         axios.get(`${OLLAMA_URL}/api/version`, { timeout: 1500 })
             .then(() => { isOllamaHealthy = true; }).catch(() => {})
     ]);

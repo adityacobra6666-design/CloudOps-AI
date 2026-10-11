@@ -1833,6 +1833,13 @@ html, body, #root {
     100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
 }
 
+.obs-pulse-dot-stale {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--color-text-muted);
+}
+
 /* CHARTS GRID */
 .obs-charts-grid {
     display: grid;
