@@ -57,6 +57,8 @@ const connectDB = async () => {
 // START SERVER
 // ================================
 
+const { startIncidentDetector, stopIncidentDetector } = require("./services/incidentDetector.service");
+
 let server;
 
 const startServer = async () => {
@@ -66,6 +68,9 @@ const startServer = async () => {
         console.log(`🚀 CloudOps AI Backend Started`);
         console.log(`🌐 http://localhost:${PORT}`);
     });
+
+    // Start background automatic incident intelligence detector
+    startIncidentDetector();
 };
 
 // ================================
@@ -74,6 +79,8 @@ const startServer = async () => {
 
 const gracefulShutdown = async (signal) => {
     console.log(`\n⚡ ${signal} received. Shutting down gracefully...`);
+
+    stopIncidentDetector();
 
     if (server) {
         server.close(() => {

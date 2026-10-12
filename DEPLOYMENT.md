@@ -298,3 +298,28 @@ In the Render Dashboard for your **CloudOps Backend Web Service**, navigate to *
 1. **Detection**: If `GRAFANA_CLOUD_PROMETHEUS_URL` is set, the backend automatically operates in `grafana_cloud` provider mode using HTTP Basic Auth.
 2. **Local Fallback**: If those variables are unset, the backend seamlessly falls back to `PROMETHEUS_URL` (default `http://prometheus:9090`) for local Docker development.
 3. **Data Availability**: If metrics (such as host node exporter metrics) are not ingested into Grafana Cloud, the backend reports `available: false` and the frontend gracefully displays `—` and `Unavailable` without fabricating false zero telemetry.
+
+---
+
+## 10. Kubernetes & Minikube Deployment
+
+CloudOps AI includes production-ready Kubernetes manifests designed for local development on **Minikube** and cluster environments.
+
+- **Manifests Location**: `k8s/`
+- **Detailed Documentation**: See [k8s/README.md](file:///home/aadi/Projects/cloud-Project/CloudOps-AI/k8s/README.md) for full commands, shell-agnostic scripts, and architectures.
+
+### Quick Start:
+```bash
+# 1. Build and load backend image into Minikube
+docker build -t cloudops-backend:local -f server/Dockerfile server/
+minikube image load cloudops-backend:local
+
+# 2. Configure secrets safely without leaking to terminal
+./k8s/scripts/setup-secrets.sh
+
+# 3. Deploy full stack to Minikube
+./k8s/scripts/deploy.sh
+
+# 4. Check status and health
+./k8s/scripts/status.sh
+```

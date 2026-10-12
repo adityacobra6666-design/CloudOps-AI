@@ -21,6 +21,7 @@ const incidentSchema = new mongoose.Schema({
         enum: [
             "critical",
             "warning",
+            "WARNING",
             "info",
             "CRITICAL",
             "HIGH",
@@ -98,6 +99,56 @@ const incidentSchema = new mongoose.Schema({
     generatorURL: {
         type: String,
         default: null
+    },
+
+    // =========================================
+    // AUTOMATIC INCIDENT INTELLIGENCE ENGINE
+    // =========================================
+
+    triggerRule: {
+        type: String,
+        default: null,
+        index: true
+    },
+
+    metricName: {
+        type: String,
+        default: null
+    },
+
+    observedValue: {
+        type: Number,
+        default: null
+    },
+
+    thresholdValue: {
+        type: Number,
+        default: null
+    },
+
+    unit: {
+        type: String,
+        default: null
+    },
+
+    lastSeenAt: {
+        type: Date,
+        default: Date.now
+    },
+
+    resolvedAt: {
+        type: Date,
+        default: null
+    },
+
+    resolutionNote: {
+        type: String,
+        default: null
+    },
+
+    autoDetected: {
+        type: Boolean,
+        default: false
     },
 
     // =========================================

@@ -428,3 +428,24 @@ exports.analyzeIncidentWithAI = async (req, res) => {
         });
     }
 };
+
+// =========================================
+// TRIGGER AUTOMATIC INCIDENT EVALUATION
+// =========================================
+exports.evaluateIncidentsNow = async (req, res) => {
+    try {
+        const { evaluateRulesOnce } = require("../services/incidentDetector.service");
+        const summary = await evaluateRulesOnce();
+        return res.json({
+            success: true,
+            message: "Incident detection evaluation completed",
+            summary
+        });
+    } catch (error) {
+        console.error("Evaluation error:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: `Evaluation failed: ${error.message}`
+        });
+    }
+};

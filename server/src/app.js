@@ -131,27 +131,11 @@ app.get("/", (req, res) => {
 });
 
 // ======================================================
-// HEALTH CHECK (with real dependency status)
+// HEALTH CHECK (Lightweight Kubernetes & Load Balancer Probe)
 // ======================================================
 
-app.get(["/health", "/api/health"], async (req, res) => {
-    const axios = require("axios");
-    const { checkPrometheusHealth } = require("./services/prometheus.service");
-    const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
-
+app.get(["/health", "/api/health"], (req, res) => {
     const isDbHealthy = mongoose.connection.readyState === 1;
-
-    let isPrometheusHealthy = false;
-    let isOllamaHealthy = false;
-
-    await Promise.allSettled([
-        checkPrometheusHealth()
-            .then((res) => { isPrometheusHealthy = res.healthy; })
-            .catch(() => {}),
-        axios.get(`${OLLAMA_URL}/api/version`, { timeout: 1500 })
-            .then(() => { isOllamaHealthy = true; }).catch(() => {})
-    ]);
-
     const status = isDbHealthy ? "healthy" : "unhealthy";
     const httpStatus = isDbHealthy ? 200 : 503;
 
@@ -161,8 +145,8 @@ app.get(["/health", "/api/health"], async (req, res) => {
         timestamp: new Date().toISOString(),
         dependencies: {
             database: isDbHealthy ? "healthy" : "unhealthy",
-            prometheus: isPrometheusHealthy ? "healthy" : "unavailable",
-            ollama: isOllamaHealthy ? "healthy" : "unavailable"
+            prometheus: "not_checked",
+            ollama: "not_checked"
         }
     });
 });

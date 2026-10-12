@@ -8,7 +8,8 @@ const {
     updateIncident,
     deleteIncident,
     analyzeIncidentWithAI,
-    alertWebhook
+    alertWebhook,
+    evaluateIncidentsNow
 } = require("../controllers/incidentController");
 
 const { protect, requireRole } = require("../middleware/auth.middleware");
@@ -28,6 +29,7 @@ router.get("/:id", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getIncid
 router.get("/:id/activity", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), getIncidentActivity);
 
 router.post("/", protect, requireRole("ENGINEER", "ADMIN"), createIncident);
+router.post("/evaluate", protect, requireRole("ENGINEER", "ADMIN"), evaluateIncidentsNow);
 router.put("/:id", protect, requireRole("ENGINEER", "ADMIN"), updateIncident);
 router.post("/:id/analyze", protect, requireRole("ENGINEER", "ADMIN"), analyzeIncidentWithAI);
 

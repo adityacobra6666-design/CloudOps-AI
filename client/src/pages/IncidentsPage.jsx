@@ -9,7 +9,8 @@ import {
     deleteIncident,
     analyzeIncident,
     executeRemediation,
-    getRemediationHistory
+    getRemediationHistory,
+    evaluateIncidents
 } from "../services/api";
 
 export default function IncidentsPage() {
@@ -28,8 +29,9 @@ export default function IncidentsPage() {
     const [analyzingId, setAnalyzingId] = useState(null);
     const [analysisError, setAnalysisError] = useState(null);
     const [remediatingId, setRemediatingId] = useState(null);
-    const [remediationHistory, setRemediationHistory] = useState([]);
     const [remediationMsg, setRemediationMsg] = useState(null);
+    const [isEvaluating, setIsEvaluating] = useState(false);
+    const [evaluateMsg, setEvaluateMsg] = useState(null);
 
     // New Incident Form
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -120,6 +122,24 @@ export default function IncidentsPage() {
             fetchIncidentsData(false);
         } catch (err) {
             alert(err.message || "Failed to create incident");
+        }
+    };
+
+    const handleRunEvaluation = async () => {
+        if (isEvaluating) return;
+        try {
+            setIsEvaluating(true);
+            setEvaluateMsg("Evaluating live telemetry against operational thresholds...");
+            const res = await evaluateIncidents();
+            const s = res?.summary || {};
+            setEvaluateMsg(`Detection pass complete: ${s.evaluatedRules || 0} rules checked, ${s.incidentsCreated || 0} created, ${s.incidentsUpdated || 0} updated, ${s.incidentsResolved || 0} auto-resolved.`);
+            await fetchIncidentsData(false);
+            setTimeout(() => setEvaluateMsg(null), 6000);
+        } catch (err) {
+            setEvaluateMsg(`Evaluation error: ${err.message}`);
+            setTimeout(() => setEvaluateMsg(null), 6000);
+        } finally {
+            setIsEvaluating(false);
         }
     };
 
@@ -251,6 +271,22 @@ export default function IncidentsPage() {
 
     const isEngineerOrAdmin = user?.role === "ENGINEER" || user?.role === "ADMIN";
 
+    // Summary statistics calculations
+    const openIncidents = incidents.filter(i => {
+        const s = String(i.status || "").toUpperCase();
+        return s === "OPEN" || s === "INVESTIGATING" || s === "IN_PROGRESS";
+    });
+    const totalOpen = openIncidents.length;
+    const criticalCount = openIncidents.filter(i => String(i.severity || "").toUpperCase() === "CRITICAL").length;
+    const warningCount = openIncidents.filter(i => {
+        const s = String(i.severity || "").toUpperCase();
+        return s === "WARNING" || s === "HIGH";
+    }).length;
+    const infoCount = openIncidents.filter(i => {
+        const s = String(i.severity || "").toUpperCase();
+        return s === "INFO" || s === "LOW" || s === "MEDIUM";
+    }).length;
+
     return (
         <div className="page-container">
             <Header
@@ -259,6 +295,50 @@ export default function IncidentsPage() {
                 onRefresh={() => fetchIncidentsData(true)}
                 refreshing={loading}
             />
+
+            {/* INCIDENTS SUMMARY STATS BAR */}
+            <div className="incident-stats-grid" style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                gap: "1rem",
+                marginBottom: "1.25rem"
+            }}>
+                <div className="ops-card" style={{ padding: "1.25rem", borderLeft: "4px solid #3B82F6" }}>
+                    <div style={{ fontSize: "0.8rem", color: "var(--color-text-muted)", fontWeight: "600", textTransform: "uppercase" }}>Total Open Incidents</div>
+                    <div style={{ fontSize: "1.75rem", fontWeight: "700", marginTop: "4px" }}>{totalOpen}</div>
+                </div>
+                <div className="ops-card" style={{ padding: "1.25rem", borderLeft: "4px solid #EF4444" }}>
+                    <div style={{ fontSize: "0.8rem", color: "#EF4444", fontWeight: "600", textTransform: "uppercase" }}>Critical Severity</div>
+                    <div style={{ fontSize: "1.75rem", fontWeight: "700", marginTop: "4px", color: "#EF4444" }}>{criticalCount}</div>
+                </div>
+                <div className="ops-card" style={{ padding: "1.25rem", borderLeft: "4px solid #F59E0B" }}>
+                    <div style={{ fontSize: "0.8rem", color: "#F59E0B", fontWeight: "600", textTransform: "uppercase" }}>Warning Severity</div>
+                    <div style={{ fontSize: "1.75rem", fontWeight: "700", marginTop: "4px", color: "#F59E0B" }}>{warningCount}</div>
+                </div>
+                <div className="ops-card" style={{ padding: "1.25rem", borderLeft: "4px solid #10B981" }}>
+                    <div style={{ fontSize: "0.8rem", color: "#10B981", fontWeight: "600", textTransform: "uppercase" }}>Low / Informational</div>
+                    <div style={{ fontSize: "1.75rem", fontWeight: "700", marginTop: "4px", color: "#10B981" }}>{infoCount}</div>
+                </div>
+            </div>
+
+            {/* EVALUATION STATUS BANNER */}
+            {evaluateMsg && (
+                <div style={{
+                    marginBottom: "1.25rem",
+                    padding: "0.75rem 1rem",
+                    borderRadius: "8px",
+                    backgroundColor: "rgba(59, 130, 246, 0.1)",
+                    border: "1px solid rgba(59, 130, 246, 0.25)",
+                    color: "#2563EB",
+                    fontSize: "0.875rem",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px"
+                }}>
+                    <span>⚡</span>
+                    <span>{evaluateMsg}</span>
+                </div>
+            )}
 
             {/* TOOLBAR */}
             <div className="filter-bar">
@@ -296,13 +376,26 @@ export default function IncidentsPage() {
                     </select>
 
                     {isEngineerOrAdmin && (
-                        <button
-                            type="button"
-                            className="btn-primary"
-                            onClick={() => setShowCreateModal(true)}
-                        >
-                            + Report Incident
-                        </button>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                            <button
+                                type="button"
+                                className="btn-secondary"
+                                onClick={handleRunEvaluation}
+                                disabled={isEvaluating}
+                                title="Evaluate all detection rules against live telemetry now"
+                                style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                            >
+                                <span>⚡</span>
+                                <span>{isEvaluating ? "Evaluating..." : "Evaluate Now"}</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-primary"
+                                onClick={() => setShowCreateModal(true)}
+                            >
+                                + Report Incident
+                            </button>
+                        </div>
                     )}
                 </div>
             </div>
@@ -322,10 +415,11 @@ export default function IncidentsPage() {
                                 <thead>
                                     <tr>
                                         <th>Severity</th>
-                                        <th>Title</th>
+                                        <th>Title & Rule</th>
+                                        <th>Observed / Threshold</th>
                                         <th>Status</th>
                                         <th>Source</th>
-                                        <th>Created At</th>
+                                        <th>Created / Last Seen</th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
@@ -337,15 +431,41 @@ export default function IncidentsPage() {
                                                     {inc.severity}
                                                 </span>
                                             </td>
-                                            <td className="font-semibold">{inc.title}</td>
+                                            <td className="font-semibold">
+                                                <div>{inc.title}</div>
+                                                {inc.triggerRule && (
+                                                    <div style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px" }}>
+                                                        <span>Rule: <code>{inc.triggerRule}</code></span>
+                                                        {inc.autoDetected && (
+                                                            <span style={{ padding: "1px 5px", borderRadius: "3px", backgroundColor: "rgba(59, 130, 246, 0.15)", color: "#3B82F6", fontWeight: "600", fontSize: "0.68rem" }}>
+                                                                ⚡ Auto-Detected
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td>
+                                                {inc.observedValue !== null && inc.observedValue !== undefined ? (
+                                                    <span style={{ fontWeight: "600" }}>
+                                                        {inc.observedValue}{inc.unit || ""} <span style={{ color: "var(--color-text-muted)", fontWeight: "normal", fontSize: "0.8rem" }}>/ {inc.thresholdValue}{inc.unit || ""}</span>
+                                                    </span>
+                                                ) : (
+                                                    <span style={{ color: "var(--color-text-muted)" }}>—</span>
+                                                )}
+                                            </td>
                                             <td>
                                                 <span className={`status-pill ${inc.status?.toLowerCase()}`}>
                                                     {inc.status}
                                                 </span>
                                             </td>
                                             <td>{inc.source || "Alertmanager"}</td>
-                                            <td className="text-muted">
-                                                {new Date(inc.createdAt).toLocaleString()}
+                                            <td className="text-muted" style={{ fontSize: "0.82rem" }}>
+                                                <div>{new Date(inc.createdAt).toLocaleString()}</div>
+                                                {inc.lastSeenAt && new Date(inc.lastSeenAt).getTime() - new Date(inc.createdAt).getTime() > 60000 && (
+                                                    <div style={{ fontSize: "0.72rem", color: "var(--color-text-muted)" }}>
+                                                        Active: {new Date(inc.lastSeenAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    </div>
+                                                )}
                                             </td>
                                             <td>
                                                 <button
@@ -446,6 +566,33 @@ export default function IncidentsPage() {
                                 <div><span className="lbl">Source:</span> {selectedIncident.source || "Alertmanager"}</div>
                                 <div><span className="lbl">Reported:</span> {new Date(selectedIncident.createdAt).toLocaleString()}</div>
                             </div>
+
+                            {/* DETECTION INTELLIGENCE PANEL */}
+                            {selectedIncident.triggerRule && (
+                                <div className="detail-section" style={{
+                                    backgroundColor: "rgba(59, 130, 246, 0.05)",
+                                    borderRadius: "8px",
+                                    padding: "1rem",
+                                    border: "1px solid rgba(59, 130, 246, 0.2)",
+                                    marginBottom: "1rem"
+                                }}>
+                                    <h4 style={{ margin: "0 0 10px 0", color: "#3B82F6", display: "flex", alignItems: "center", gap: "6px" }}>
+                                        <span>⚡</span>
+                                        <span>Automatic Detection Intelligence</span>
+                                    </h4>
+                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "10px", fontSize: "0.85rem" }}>
+                                        <div><span className="lbl">Trigger Rule:</span> <code>{selectedIncident.triggerRule}</code></div>
+                                        <div><span className="lbl">Observed Value:</span> <strong>{selectedIncident.observedValue !== null && selectedIncident.observedValue !== undefined ? `${selectedIncident.observedValue}${selectedIncident.unit || ""}` : "—"}</strong></div>
+                                        <div><span className="lbl">Threshold:</span> <strong>{selectedIncident.thresholdValue !== null && selectedIncident.thresholdValue !== undefined ? `${selectedIncident.thresholdValue}${selectedIncident.unit || ""}` : "—"}</strong></div>
+                                        <div><span className="lbl">Last Seen:</span> {new Date(selectedIncident.lastSeenAt || selectedIncident.createdAt).toLocaleString()}</div>
+                                    </div>
+                                    {selectedIncident.resolutionNote && (
+                                        <div style={{ marginTop: "10px", padding: "8px 12px", borderRadius: "6px", backgroundColor: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.25)", color: "#10B981", fontSize: "0.85rem" }}>
+                                            <strong>Resolution Details:</strong> {selectedIncident.resolutionNote}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
                             {/* DESCRIPTION */}
                             {selectedIncident.description && (

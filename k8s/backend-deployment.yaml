@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudops-backend
+  namespace: cloudops
+  labels:
+    app: cloudops-backend
+    tier: api
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: cloudops-backend
+  template:
+    metadata:
+      labels:
+        app: cloudops-backend
+        tier: api
+    spec:
+      serviceAccountName: cloudops-sa
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: backend
+          image: cloudops-backend:local
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: cloudops-backend-config
+            - secretRef:
+                name: cloudops-backend-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+          # Startup probe gives up to 150s for initial database connection
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          # Readiness probe ensures traffic is only routed when backend and DB are healthy
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Liveness probe restarts deadlocked processes
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3

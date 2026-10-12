@@ -126,6 +126,12 @@ export const getIncidentActivity = async (incidentId) => {
     return apiFetch(`/incidents/${incidentId}/activity`);
 };
 
+export const evaluateIncidents = async () => {
+    return apiFetch("/incidents/evaluate", {
+        method: "POST"
+    });
+};
+
 // =========================================
 // REMEDIATION APIs
 // =========================================
