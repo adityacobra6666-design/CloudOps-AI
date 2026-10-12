@@ -211,7 +211,7 @@ export default function KubernetesPage() {
                             <span className="tile-label">Nodes</span>
                             <div className="tile-value-row">
                                 <span className="tile-value">
-                                    {k8sData.summary?.nodesReady || 0} / {k8sData.summary?.nodesTotal || 0}
+                                    {k8sData.summary?.nodesReady ?? k8sData.nodes?.filter(n => n.status === "Ready").length ?? 0} / {k8sData.summary?.nodesTotal ?? k8sData.counts?.nodes ?? k8sData.nodes?.length ?? 0}
                                 </span>
                             </div>
                             <span className="tile-status healthy">Ready</span>
@@ -220,7 +220,7 @@ export default function KubernetesPage() {
                             <span className="tile-label">Pods</span>
                             <div className="tile-value-row">
                                 <span className="tile-value">
-                                    {k8sData.summary?.podsRunning || 0} / {k8sData.summary?.podsTotal || 0}
+                                    {k8sData.summary?.podsRunning ?? k8sData.pods?.filter(p => p.status === "Running").length ?? 0} / {k8sData.summary?.podsTotal ?? k8sData.counts?.pods ?? k8sData.pods?.length ?? 0}
                                 </span>
                             </div>
                             <span className="tile-status healthy">Running</span>
@@ -229,7 +229,7 @@ export default function KubernetesPage() {
                             <span className="tile-label">Deployments</span>
                             <div className="tile-value-row">
                                 <span className="tile-value">
-                                    {k8sData.summary?.deploymentsHealthy || 0} / {k8sData.summary?.deploymentsTotal || 0}
+                                    {k8sData.summary?.deploymentsHealthy ?? k8sData.deployments?.filter(d => (d.readyReplicas ?? d.ready ?? 0) >= (d.replicas ?? d.desired ?? 0)).length ?? 0} / {k8sData.summary?.deploymentsTotal ?? k8sData.counts?.deployments ?? k8sData.deployments?.length ?? 0}
                                 </span>
                             </div>
                             <span className="tile-status healthy">Healthy</span>
@@ -307,11 +307,11 @@ export default function KubernetesPage() {
                                                 <tr key={`${dep.namespace}-${dep.name}`}>
                                                     <td className="font-semibold">{dep.name}</td>
                                                     <td><code>{dep.namespace}</code></td>
-                                                    <td><strong>{dep.ready}</strong> / {dep.desired}</td>
-                                                    <td>{dep.available}</td>
+                                                    <td><strong>{dep.ready ?? dep.readyReplicas ?? 0}</strong> / {dep.desired ?? dep.replicas ?? 0}</td>
+                                                    <td>{dep.available ?? dep.availableReplicas ?? 0}</td>
                                                     <td>
-                                                        <span className={`status-pill ${dep.status === "HEALTHY" ? "success" : "warning"}`}>
-                                                            {dep.status}
+                                                        <span className={`status-pill ${(dep.status === "HEALTHY" || ((dep.readyReplicas ?? dep.ready ?? 0) >= (dep.replicas ?? dep.desired ?? 0))) ? "success" : "warning"}`}>
+                                                            {dep.status || ((dep.readyReplicas ?? dep.ready ?? 0) >= (dep.replicas ?? dep.desired ?? 0) ? "HEALTHY" : "DEGRADED")}
                                                         </span>
                                                     </td>
                                                     <td>
@@ -382,7 +382,7 @@ export default function KubernetesPage() {
                                                     </td>
                                                     <td>{pod.ready}</td>
                                                     <td>{pod.restarts}</td>
-                                                    <td>{pod.node}</td>
+                                                    <td>{pod.node || "—"}</td>
                                                     <td><code>{pod.ip}</code></td>
                                                 </tr>
                                             ))

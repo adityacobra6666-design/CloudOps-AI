@@ -303,6 +303,10 @@ exports.executeKubernetesAction = async (req, res) => {
     let actionRecord = null;
     try {
         const { action, target, replicas, namespace, incidentId, reason, connectionId } = req.body;
+        return res.status(403).json({
+            success: false,
+            message: "Kubernetes remediation is disabled in read-only mode."
+        });
 
         // 1. Strict Action Validation
         if (!action || !["SCALE_SERVICE", "RESTART_SERVICE"].includes(action)) {
