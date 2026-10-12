@@ -29,7 +29,10 @@ export default function KubernetesPage() {
             try {
                 const res = await getInfrastructureConnections();
                 if (res.success) {
-                    setAvailableConnections(res.connections || []);
+                    const connections = res.connections || [];
+                    setAvailableConnections(connections);
+                    const connected = connections.find(c => c.status === "CONNECTED");
+                    if (connected) setSelectedEnvironment(current => current === "local" ? connected._id : current);
                 }
             } catch (e) {}
         };
@@ -200,7 +203,7 @@ export default function KubernetesPage() {
                         <div className="metric-tile">
                             <span className="tile-label">Cluster Connection</span>
                             <div className="tile-value-row">
-                                <span className="tile-value" style={{ fontSize: "1.1rem" }}>{k8sData.cluster}</span>
+                                <span className="tile-value" style={{ fontSize: "1.1rem" }}>{typeof k8sData.cluster === "string" ? k8sData.cluster : (k8sData.cluster?.server || k8sData.cluster?.context || k8sData.cluster?.source || "Connected cluster")}</span>
                             </div>
                             <span className="tile-status healthy">● Connected</span>
                         </div>

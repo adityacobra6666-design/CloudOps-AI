@@ -85,26 +85,9 @@ async function startAgent() {
         }
     }, config.telemetryIntervalMs);
 
-    // Command Polling Loop (~5s)
-    let isPolling = false;
-    const commandTimer = setInterval(async () => {
-        if (isShuttingDown || apiClient.isRevoked || isPolling) return;
-        isPolling = true;
-
-        try {
-            const command = await apiClient.pollCommands();
-            if (command) {
-                console.log(`📥 [AGENT] Received command: ${command.action} (${command.commandId})`);
-                const result = await remediationExecutor.executeCommand(command);
-                console.log(`📤 [AGENT] Submitting command result: status=${result.status}`);
-                await apiClient.submitCommandResult(result);
-            }
-        } catch (err) {
-            console.warn(`[AGENT] Command poll notice: ${err.message}`);
-        } finally {
-            isPolling = false;
-        }
-    }, config.commandPollIntervalMs);
+    // Read-only mode: remote command polling is disabled.
+    const commandTimer = null;
+    console.log("[AGENT] Read-only mode: remote command execution disabled.");
 
     // Send initial telemetry immediately
     try {
