@@ -157,12 +157,13 @@ class ApiClient {
     // =========================================
     handleApiError(operation, error) {
         const status = error.response?.status;
-        const msg = error.response?.data?.message || error.message;
+        const msg = String(error.response?.data?.message || error.message || "");
 
         if (status === 401 || status === 403) {
             console.error(`🚫 [AGENT] ${operation} rejected (${status}): ${msg}`);
-            if (msg.includes("revoked") || status === 403) {
-                console.error(`🔒 [AGENT] Connection has been revoked by CloudOps AI control plane. Halting further operations.`);
+            const lowerMsg = msg.toLowerCase();
+            if (status === 403 && (lowerMsg.includes("revoked") || lowerMsg.includes("disabled"))) {
+                console.error(`🔒 [AGENT] Connection has been revoked or disabled by CloudOps AI control plane. Halting further operations.`);
                 this.isRevoked = true;
             }
         } else {

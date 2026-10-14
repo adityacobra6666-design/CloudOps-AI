@@ -50,6 +50,7 @@ exports.getKubernetesOverview = async (req, res) => {
                         deployments: k8sSummary.deploymentsCount || k8sSummary.deployments?.length || 0,
                         services: k8sSummary.servicesCount || k8sSummary.services?.length || 0
                     },
+                    namespace: namespace || "cloudops",
                     nodes: k8sSummary.nodes || [],
                     pods: k8sSummary.pods || [],
                     deployments: k8sSummary.deployments || [],
@@ -303,10 +304,6 @@ exports.executeKubernetesAction = async (req, res) => {
     let actionRecord = null;
     try {
         const { action, target, replicas, namespace, incidentId, reason, connectionId } = req.body;
-        return res.status(403).json({
-            success: false,
-            message: "Kubernetes remediation is disabled in read-only mode."
-        });
 
         // 1. Strict Action Validation
         if (!action || !["SCALE_SERVICE", "RESTART_SERVICE"].includes(action)) {

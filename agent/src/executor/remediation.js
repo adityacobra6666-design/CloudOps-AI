@@ -19,7 +19,11 @@ class RemediationExecutor {
             return { valid: false, reason: "Command payload is missing or malformed" };
         }
 
-        const { action, target, parameters } = command;
+        const { commandId, action, target, parameters } = command;
+
+        if (!commandId || typeof commandId !== "string" || !commandId.trim()) {
+            return { valid: false, reason: "Command commandId is required and must be a valid string." };
+        }
 
         // 1. Strict Action Whitelist Check
         if (!this.config.allowedActions.includes(action)) {
@@ -58,6 +62,16 @@ class RemediationExecutor {
             return { valid: false, reason: "Target deployment name is required and cannot be empty." };
         }
 
+        const deploymentName = target.name.trim();
+        if (Array.isArray(this.config.allowedDeployments) && this.config.allowedDeployments.length > 0) {
+            if (!this.config.allowedDeployments.includes(deploymentName)) {
+                return {
+                    valid: false,
+                    reason: `Target deployment "${deploymentName}" is not in the agent whitelist (${this.config.allowedDeployments.join(", ")}).`
+                };
+            }
+        }
+
         // 3. Scale Parameters Check
         if (action === "SCALE_SERVICE") {
             const replicas = parseInt(parameters?.replicas, 10);
@@ -80,10 +94,10 @@ class RemediationExecutor {
      * Execute structured action safely
      */
     async executeCommand(command) {
-        const { commandId, action, target, parameters } = command;
+        const { commandId, action, target, parameters } = command || {};
 
         // 1. Replay Protection: Check if already executed
-        if (this.executedCommands.has(commandId)) {
+        if (commandId && this.executedCommands.has(commandId)) {
             console.log(`🛡️ [AGENT EXEC] Replay protection: command ${commandId} already executed. Returning previous result.`);
             return this.executedCommands.get(commandId);
         }
@@ -93,16 +107,17 @@ class RemediationExecutor {
         // 2. Defense-in-depth policy check
         const policyCheck = this.validateCommand(command);
         if (!policyCheck.valid) {
-            console.error(`🚫 [AGENT EXEC] Policy REJECTED command ${commandId}: ${policyCheck.reason}`);
+            const effectiveId = commandId || "unknown";
+            console.error(`🚫 [AGENT EXEC] Policy REJECTED command ${effectiveId}: ${policyCheck.reason}`);
             const rejectResult = {
-                commandId,
+                commandId: effectiveId,
                 startedAt,
                 completedAt: new Date().toISOString(),
                 status: "REJECTED",
                 message: `Agent-side security policy rejected command: ${policyCheck.reason}`,
                 error: policyCheck.reason
             };
-            this.cacheResult(commandId, rejectResult);
+            if (commandId) this.cacheResult(commandId, rejectResult);
             return rejectResult;
         }
 

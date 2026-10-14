@@ -85,9 +85,25 @@ async function startAgent() {
         }
     }, config.telemetryIntervalMs);
 
-    // Read-only mode: remote command polling is disabled.
-    const commandTimer = null;
-    console.log("[AGENT] Read-only mode: remote command execution disabled.");
+    // Poll authenticated commands and enforce agent-side validation.
+    let isProcessingCommand = false;
+    const commandTimer = setInterval(async () => {
+        if (isShuttingDown || apiClient.isRevoked || isProcessingCommand) return;
+        isProcessingCommand = true;
+        try {
+            const command = await apiClient.pollCommands();
+            if (!command) return;
+            const result = await remediationExecutor.executeCommand(command);
+            if (result && !isShuttingDown && !apiClient.isRevoked) {
+                await apiClient.submitCommandResult(result);
+            }
+        } catch (err) {
+            console.warn(`[AGENT] Command processing notice: ${err.message}`);
+        } finally {
+            isProcessingCommand = false;
+        }
+    }, config.commandPollIntervalMs);
+    console.log("[AGENT] Command polling enabled with agent-side validation.");
 
     // Send initial telemetry immediately
     try {

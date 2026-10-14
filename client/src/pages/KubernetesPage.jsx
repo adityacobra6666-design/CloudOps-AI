@@ -1,9 +1,22 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useOutletContext } from "react-router-dom";
 import { getKubernetesOverview, executeKubernetesAction, getInfrastructureConnections } from "../services/api";
 import Header from "../components/Header";
 import { ModalPortal } from "../components/Modal";
 
 export default function KubernetesPage() {
+    const outletCtx = useOutletContext();
+    let user = outletCtx?.user;
+    if (!user) {
+        try {
+            const stored = localStorage.getItem("user");
+            if (stored) user = JSON.parse(stored);
+        } catch {
+            user = null;
+        }
+    }
+    const isAuthorized = user?.role === "ENGINEER" || user?.role === "ADMIN";
+
     const [k8sData, setK8sData] = useState(null);
     const [selectedEnvironment, setSelectedEnvironment] = useState("local");
     const [availableConnections, setAvailableConnections] = useState([]);
@@ -15,7 +28,7 @@ export default function KubernetesPage() {
     // Modal state for scaling
     const [scaleModalOpen, setScaleModalOpen] = useState(false);
     const [targetDeployment, setTargetDeployment] = useState(null);
-    const [desiredReplicas, setDesiredReplicas] = useState(4);
+    const [desiredReplicas, setDesiredReplicas] = useState(2);
 
     // Modal state for restart confirmation
     const [restartModalOpen, setRestartModalOpen] = useState(false);
@@ -23,41 +36,85 @@ export default function KubernetesPage() {
     // Audit detail modal
     const [selectedAuditDetail, setSelectedAuditDetail] = useState(null);
 
-    // Load available connections
+    // Load available connections and select connected agent
     useEffect(() => {
+        let isMounted = true;
         const loadConnections = async () => {
             try {
                 const res = await getInfrastructureConnections();
-                if (res.success) {
+                if (res.success && isMounted) {
                     const connections = res.connections || [];
                     setAvailableConnections(connections);
                     const connected = connections.find(c => c.status === "CONNECTED");
-                    if (connected) setSelectedEnvironment(current => current === "local" ? connected._id : current);
+                    if (connected) {
+                        setSelectedEnvironment(current => (current === "local" || !connections.some(c => c._id === current)) ? connected._id : current);
+                    } else if (connections.length > 0) {
+                        setSelectedEnvironment(current => (current === "local" || !connections.some(c => c._id === current)) ? connections[0]._id : current);
+                    }
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.warn("Failed to load connections:", e?.message);
+            }
         };
         loadConnections();
+        return () => { isMounted = false; };
     }, []);
 
-    const fetchK8s = async (connId = selectedEnvironment) => {
+    const fetchK8s = useCallback(async (connId = selectedEnvironment, showLoading = true) => {
         try {
-            setLoading(true);
+            if (showLoading) setLoading(true);
             setErrorMsg(null);
-            const data = await getKubernetesOverview(undefined, connId);
+            const queryConnId = (connId && connId !== "local") ? connId : undefined;
+            const data = await getKubernetesOverview(undefined, queryConnId);
             setK8sData(data);
         } catch (err) {
             console.error("K8s fetch error:", err);
             setErrorMsg(err.message || "Failed to connect to Kubernetes API");
         } finally {
-            setLoading(false);
+            if (showLoading) setLoading(false);
         }
-    };
+    }, [selectedEnvironment]);
 
     useEffect(() => {
-        fetchK8s(selectedEnvironment);
-        const interval = setInterval(() => fetchK8s(selectedEnvironment), 10000);
-        return () => clearInterval(interval);
-    }, [selectedEnvironment]);
+        let isMounted = true;
+        const queryConnId = (selectedEnvironment && selectedEnvironment !== "local") ? selectedEnvironment : undefined;
+        getKubernetesOverview(undefined, queryConnId)
+            .then(data => {
+                if (isMounted) {
+                    setK8sData(data);
+                    setLoading(false);
+                }
+            })
+            .catch(err => {
+                if (isMounted) {
+                    setErrorMsg(err.message || "Failed to connect to Kubernetes API");
+                    setLoading(false);
+                }
+            });
+
+        const interval = setInterval(() => {
+            fetchK8s(selectedEnvironment, false);
+        }, 10000);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, [fetchK8s, selectedEnvironment]);
+
+    // Active connection state helper
+    const currentConnection = availableConnections.find(c => c._id === selectedEnvironment);
+    const isConnectionAvailable = selectedEnvironment === "local"
+        ? Boolean(k8sData?.connected)
+        : (currentConnection ? (currentConnection.status === "CONNECTED" && currentConnection.enabled !== false) : Boolean(k8sData?.connected));
+
+    const getEffectiveConnectionId = () => {
+        if (selectedEnvironment && selectedEnvironment !== "local") {
+            return selectedEnvironment;
+        }
+        const connected = availableConnections.find(c => c.status === "CONNECTED") || availableConnections[0];
+        if (connected?._id) return connected._id;
+        return undefined;
+    };
 
     const handleScaleSubmit = async (e) => {
         e.preventDefault();
@@ -68,18 +125,38 @@ export default function KubernetesPage() {
             setErrorMsg(null);
             setSuccessMsg(null);
 
-            const res = await executeKubernetesAction({
-                action: "SCALE_SERVICE",
-                target: targetDeployment.name,
-                namespace: targetDeployment.namespace,
-                replicas: Number(desiredReplicas),
-                connectionId: selectedEnvironment !== "local" ? selectedEnvironment : undefined,
-                reason: `Manual scaling via UI to ${desiredReplicas} replicas`
-            });
+            const effectiveConnectionId = getEffectiveConnectionId();
+            const targetName = targetDeployment.name?.trim();
+            const targetNamespace = (targetDeployment.namespace || k8sData?.namespace || "cloudops").trim();
+            const numReplicas = parseInt(desiredReplicas, 10);
 
-            setSuccessMsg(res.message || `Successfully scaled ${targetDeployment.name} to ${desiredReplicas} replicas.`);
-            setScaleModalOpen(false);
-            fetchK8s(selectedEnvironment);
+            if (isNaN(numReplicas) || numReplicas < 1 || numReplicas > 10) {
+                setErrorMsg(`Desired replicas must be an integer between 1 and 10.`);
+                setActionLoading(false);
+                return;
+            }
+
+            const payload = {
+                action: "SCALE_SERVICE",
+                target: targetName,
+                namespace: targetNamespace,
+                replicas: numReplicas,
+                reason: `Manual scaling via UI to ${numReplicas} replicas`
+            };
+
+            if (effectiveConnectionId) {
+                payload.connectionId = effectiveConnectionId;
+            }
+
+            const res = await executeKubernetesAction(payload);
+
+            if (res.success) {
+                setSuccessMsg(res.message || `Successfully scaled ${targetName} to ${numReplicas} replicas.`);
+                setScaleModalOpen(false);
+                fetchK8s(effectiveConnectionId || selectedEnvironment);
+            } else {
+                setErrorMsg(res.message || "Scale action failed or was rejected.");
+            }
         } catch (err) {
             setErrorMsg(err.message || "Scale action failed");
         } finally {
@@ -95,17 +172,30 @@ export default function KubernetesPage() {
             setErrorMsg(null);
             setSuccessMsg(null);
 
-            const res = await executeKubernetesAction({
-                action: "RESTART_SERVICE",
-                target: targetDeployment.name,
-                namespace: targetDeployment.namespace,
-                connectionId: selectedEnvironment !== "local" ? selectedEnvironment : undefined,
-                reason: `Manual rolling restart via UI`
-            });
+            const effectiveConnectionId = getEffectiveConnectionId();
+            const targetName = targetDeployment.name?.trim();
+            const targetNamespace = (targetDeployment.namespace || k8sData?.namespace || "cloudops").trim();
 
-            setSuccessMsg(res.message || `Rolling restart initiated for ${targetDeployment.name}.`);
-            setRestartModalOpen(false);
-            fetchK8s(selectedEnvironment);
+            const payload = {
+                action: "RESTART_SERVICE",
+                target: targetName,
+                namespace: targetNamespace,
+                reason: `Manual rolling restart via UI`
+            };
+
+            if (effectiveConnectionId) {
+                payload.connectionId = effectiveConnectionId;
+            }
+
+            const res = await executeKubernetesAction(payload);
+
+            if (res.success) {
+                setSuccessMsg(res.message || `Rolling restart initiated for ${targetName}.`);
+                setRestartModalOpen(false);
+                fetchK8s(effectiveConnectionId || selectedEnvironment);
+            } else {
+                setErrorMsg(res.message || "Restart action failed or was rejected.");
+            }
         } catch (err) {
             setErrorMsg(err.message || "Restart action failed");
         } finally {
@@ -130,12 +220,17 @@ export default function KubernetesPage() {
                         onChange={(e) => setSelectedEnvironment(e.target.value)}
                         aria-label="Active Cluster Environment"
                     >
-                        <option value="local">💻 Local Cluster (Minikube / Kind)</option>
+                        {availableConnections.length === 0 && (
+                            <option value="local">💻 Local Cluster (Minikube / Kind)</option>
+                        )}
                         {availableConnections.map((c) => (
                             <option key={c._id} value={c._id}>
                                 🌐 {c.name} ({c.status})
                             </option>
                         ))}
+                        {availableConnections.length > 0 && (
+                            <option value="local">💻 Direct Local Host</option>
+                        )}
                     </select>
                 </div>
                 <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>
@@ -241,7 +336,7 @@ export default function KubernetesPage() {
                         <div className="ops-card">
                             <div className="section-header-row">
                                 <h3>🖥️ Cluster Nodes</h3>
-                                <span className="text-muted">Namespace: {k8sData.namespace}</span>
+                                <span className="text-muted">Namespace: {k8sData.namespace || "cloudops"}</span>
                             </div>
                             <div className="table-responsive">
                                 <table className="ops-table">
@@ -304,9 +399,9 @@ export default function KubernetesPage() {
                                     <tbody>
                                         {k8sData.deployments && k8sData.deployments.length > 0 ? (
                                             k8sData.deployments.map((dep) => (
-                                                <tr key={`${dep.namespace}-${dep.name}`}>
+                                                <tr key={`${dep.namespace || "cloudops"}-${dep.name}`}>
                                                     <td className="font-semibold">{dep.name}</td>
-                                                    <td><code>{dep.namespace}</code></td>
+                                                    <td><code>{dep.namespace || k8sData.namespace || "cloudops"}</code></td>
                                                     <td><strong>{dep.ready ?? dep.readyReplicas ?? 0}</strong> / {dep.desired ?? dep.replicas ?? 0}</td>
                                                     <td>{dep.available ?? dep.availableReplicas ?? 0}</td>
                                                     <td>
@@ -318,10 +413,14 @@ export default function KubernetesPage() {
                                                         <div className="action-button-group" style={{ display: "flex", gap: "6px" }}>
                                                             <button
                                                                 className="btn btn-secondary btn-sm"
-                                                                disabled={actionLoading}
+                                                                disabled={actionLoading || !isAuthorized || !isConnectionAvailable}
+                                                                title={!isAuthorized ? "Remediation execution requires ENGINEER or ADMIN role" : (!isConnectionAvailable ? "Cluster connection unavailable" : "Scale this deployment")}
                                                                 onClick={() => {
                                                                     setTargetDeployment(dep);
-                                                                    setDesiredReplicas(dep.desired + 1 <= 10 ? dep.desired + 1 : dep.desired);
+                                                                    const current = Number(dep.desired ?? dep.replicas ?? dep.readyReplicas ?? dep.ready ?? 1);
+                                                                    const next = current + 1 <= 10 ? current + 1 : current;
+                                                                    setDesiredReplicas(next);
+                                                                    setErrorMsg(null);
                                                                     setScaleModalOpen(true);
                                                                 }}
                                                             >
@@ -329,9 +428,11 @@ export default function KubernetesPage() {
                                                             </button>
                                                             <button
                                                                 className="btn btn-outline btn-sm"
-                                                                disabled={actionLoading}
+                                                                disabled={actionLoading || !isAuthorized || !isConnectionAvailable}
+                                                                title={!isAuthorized ? "Remediation execution requires ENGINEER or ADMIN role" : (!isConnectionAvailable ? "Cluster connection unavailable" : "Trigger rolling restart")}
                                                                 onClick={() => {
                                                                     setTargetDeployment(dep);
+                                                                    setErrorMsg(null);
                                                                     setRestartModalOpen(true);
                                                                 }}
                                                             >
@@ -343,7 +444,7 @@ export default function KubernetesPage() {
                                             ))
                                         ) : (
                                             <tr>
-                                                <td colSpan="6" className="text-muted text-center">No deployments found in namespace <code>{k8sData.namespace}</code>.</td>
+                                                <td colSpan="6" className="text-muted text-center">No deployments found in namespace <code>{k8sData.namespace || "cloudops"}</code>.</td>
                                             </tr>
                                         )}
                                     </tbody>
@@ -490,7 +591,7 @@ export default function KubernetesPage() {
                                 <div className="modal-title-wrap">
                                     <h3 id="scale-modal-title" className="modal-title">Scale {targetDeployment.name}</h3>
                                     <p className="modal-subtitle">
-                                        Current replicas: <strong>{targetDeployment.ready ?? targetDeployment.desired ?? 1}</strong>
+                                        Current replicas: <strong>{targetDeployment.ready ?? targetDeployment.readyReplicas ?? targetDeployment.desired ?? targetDeployment.replicas ?? 1}</strong>
                                     </p>
                                 </div>
                                 <button
@@ -505,6 +606,11 @@ export default function KubernetesPage() {
                             </div>
                             <form onSubmit={handleScaleSubmit}>
                                 <div className="modal-body">
+                                    {errorMsg && (
+                                        <div className="alert-banner error" style={{ marginBottom: "12px" }}>
+                                            <span>⚠️ {errorMsg}</span>
+                                        </div>
+                                    )}
                                     <div className="form-group" style={{ marginBottom: 0 }}>
                                         <label className="form-label">Desired replicas:</label>
                                         <input
@@ -564,7 +670,7 @@ export default function KubernetesPage() {
                                 <div className="modal-title-wrap">
                                     <h3 id="restart-modal-title" className="modal-title">Restart {targetDeployment.name}?</h3>
                                     <p className="modal-subtitle">
-                                        Namespace: <code>{targetDeployment.namespace}</code>
+                                        Namespace: <code>{targetDeployment.namespace || k8sData?.namespace || "cloudops"}</code>
                                     </p>
                                 </div>
                                 <button
@@ -578,6 +684,11 @@ export default function KubernetesPage() {
                                 </button>
                             </div>
                             <div className="modal-body">
+                                {errorMsg && (
+                                    <div className="alert-banner error" style={{ marginBottom: "12px" }}>
+                                        <span>⚠️ {errorMsg}</span>
+                                    </div>
+                                )}
                                 <p style={{ margin: 0, color: "var(--color-text-main)", fontSize: "0.88rem", lineHeight: 1.5 }}>
                                     This action will restart the deployment pods.
                                 </p>

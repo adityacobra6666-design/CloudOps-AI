@@ -312,6 +312,16 @@ class AgentRemediationExecutor extends RemediationExecutor {
             throw new Error("Validation rejected: Target namespace is required.");
         }
 
+        const isAllowedTarget = KUBERNETES_CONFIG.allowedDeployments.includes(deploymentName) || Boolean(ALLOWED_TARGETS[deploymentName]);
+        if (!isAllowedTarget) {
+            throw new Error(`Rejected: Target "${deploymentName}" is not in allowed deployments whitelist.`);
+        }
+
+        const isAllowedNs = KUBERNETES_CONFIG.allowedNamespaces.includes(namespace);
+        if (!isAllowedNs) {
+            throw new Error(`Rejected: Namespace "${namespace}" is not in allowed namespaces whitelist.`);
+        }
+
         let parameters = {};
         if (action === "SCALE_SERVICE") {
             const numReplicas = parseInt(context.replicas || context.desiredReplicas || 3, 10);

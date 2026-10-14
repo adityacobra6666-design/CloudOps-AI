@@ -32,6 +32,10 @@ module.exports = {
         .split(",")
         .map(s => s.trim())
         .filter(Boolean),
+    allowedDeployments: (process.env.ALLOWED_DEPLOYMENTS || "backend,cloudops-backend,cloudops-server")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean),
     minReplicas: parseInt(process.env.MIN_REPLICAS || "1", 10),
     maxReplicas: parseInt(process.env.MAX_REPLICAS || "10", 10)
 };
