@@ -176,6 +176,78 @@ describe("Policy Engine", () => {
             isValidTarget(""),
             false
         );
+
+        assert.equal(
+            isValidTarget("cloudops-mongodb"),
+            true
+        );
+    });
+
+    // -----------------------------------------
+    // Target-specific Action Restrictions
+    // -----------------------------------------
+
+    it("should approve RESTART_SERVICE for cloudops-mongodb on service_down incident", () => {
+        const incident = {
+            title: "Database down: MongoDB connection timeout",
+            description: "cloudops-mongodb is unreachable",
+            severity: "critical",
+            category: "infrastructure"
+        };
+
+        const result = evaluatePolicy(
+            incident,
+            "RESTART_SERVICE",
+            "cloudops-mongodb"
+        );
+
+        assert.equal(result.approved, true);
+        assert.equal(result.rule, "service_down");
+        assert.ok(result.reason.includes("service_down"));
+    });
+
+    it("should reject SCALE_SERVICE for cloudops-mongodb due to stateful singleton restriction", () => {
+        const incident = {
+            title: "High CPU on database",
+            description: "CPU saturation on cloudops-mongodb",
+            severity: "critical",
+            category: "infrastructure"
+        };
+
+        const result = evaluatePolicy(
+            incident,
+            "SCALE_SERVICE",
+            "cloudops-mongodb"
+        );
+
+        assert.equal(result.approved, false);
+        assert.ok(
+            result.reason.includes("does not permit action \"SCALE_SERVICE\""),
+            `Expected message about action not permitted, got: ${result.reason}`
+        );
+    });
+
+    it("should approve both SCALE_SERVICE and RESTART_SERVICE for cloudops-backend", () => {
+        const cpuIncident = {
+            title: "High CPU on backend deployment",
+            description: "CPU utilization > 85%",
+            severity: "critical",
+            category: "infrastructure"
+        };
+
+        const scaleResult = evaluatePolicy(
+            cpuIncident,
+            "SCALE_SERVICE",
+            "cloudops-backend"
+        );
+        assert.equal(scaleResult.approved, true);
+
+        const restartResult = evaluatePolicy(
+            cpuIncident,
+            "RESTART_SERVICE",
+            "cloudops-backend"
+        );
+        assert.equal(restartResult.approved, true);
     });
 });
 

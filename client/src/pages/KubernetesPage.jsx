@@ -410,35 +410,49 @@ export default function KubernetesPage() {
                                                         </span>
                                                     </td>
                                                     <td>
-                                                        <div className="action-button-group" style={{ display: "flex", gap: "6px" }}>
-                                                            <button
-                                                                className="btn btn-secondary btn-sm"
-                                                                disabled={actionLoading || !isAuthorized || !isConnectionAvailable}
-                                                                title={!isAuthorized ? "Remediation execution requires ENGINEER or ADMIN role" : (!isConnectionAvailable ? "Cluster connection unavailable" : "Scale this deployment")}
-                                                                onClick={() => {
-                                                                    setTargetDeployment(dep);
-                                                                    const current = Number(dep.desired ?? dep.replicas ?? dep.readyReplicas ?? dep.ready ?? 1);
-                                                                    const next = current + 1 <= 10 ? current + 1 : current;
-                                                                    setDesiredReplicas(next);
-                                                                    setErrorMsg(null);
-                                                                    setScaleModalOpen(true);
-                                                                }}
-                                                            >
-                                                                ⚡ Scale
-                                                            </button>
-                                                            <button
-                                                                className="btn btn-outline btn-sm"
-                                                                disabled={actionLoading || !isAuthorized || !isConnectionAvailable}
-                                                                title={!isAuthorized ? "Remediation execution requires ENGINEER or ADMIN role" : (!isConnectionAvailable ? "Cluster connection unavailable" : "Trigger rolling restart")}
-                                                                onClick={() => {
-                                                                    setTargetDeployment(dep);
-                                                                    setErrorMsg(null);
-                                                                    setRestartModalOpen(true);
-                                                                }}
-                                                            >
-                                                                🔄 Restart
-                                                            </button>
-                                                        </div>
+                                                        {(() => {
+                                                            const isStateful = dep.name === "cloudops-mongodb" || dep.name?.includes("mongo") || dep.name?.includes("db");
+                                                            const scaleDisabled = actionLoading || !isAuthorized || !isConnectionAvailable || isStateful;
+                                                            const scaleTitle = !isAuthorized
+                                                                ? "Remediation execution requires ENGINEER or ADMIN role"
+                                                                : (!isConnectionAvailable
+                                                                    ? "Cluster connection unavailable"
+                                                                    : (isStateful
+                                                                        ? "Scaling is disabled for stateful database singleton. Use Restart Service for recovery."
+                                                                        : "Scale this deployment"));
+
+                                                            return (
+                                                                <div className="action-button-group" style={{ display: "flex", gap: "6px" }}>
+                                                                    <button
+                                                                        className="btn btn-secondary btn-sm"
+                                                                        disabled={scaleDisabled}
+                                                                        title={scaleTitle}
+                                                                        onClick={() => {
+                                                                            setTargetDeployment(dep);
+                                                                            const current = Number(dep.desired ?? dep.replicas ?? dep.readyReplicas ?? dep.ready ?? 1);
+                                                                            const next = current + 1 <= 10 ? current + 1 : current;
+                                                                            setDesiredReplicas(next);
+                                                                            setErrorMsg(null);
+                                                                            setScaleModalOpen(true);
+                                                                        }}
+                                                                    >
+                                                                        ⚡ Scale
+                                                                    </button>
+                                                                    <button
+                                                                        className="btn btn-outline btn-sm"
+                                                                        disabled={actionLoading || !isAuthorized || !isConnectionAvailable}
+                                                                        title={!isAuthorized ? "Remediation execution requires ENGINEER or ADMIN role" : (!isConnectionAvailable ? "Cluster connection unavailable" : "Trigger rolling restart")}
+                                                                        onClick={() => {
+                                                                            setTargetDeployment(dep);
+                                                                            setErrorMsg(null);
+                                                                            setRestartModalOpen(true);
+                                                                        }}
+                                                                    >
+                                                                        🔄 Restart
+                                                                    </button>
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </td>
                                                 </tr>
                                             ))

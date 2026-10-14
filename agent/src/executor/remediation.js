@@ -72,6 +72,15 @@ class RemediationExecutor {
             }
         }
 
+        // Defense-in-depth: Prohibit scaling stateful singleton deployments (e.g., MongoDB)
+        const statefulDeployments = this.config.statefulDeployments || ["cloudops-mongodb"];
+        if (action === "SCALE_SERVICE" && statefulDeployments.includes(deploymentName)) {
+            return {
+                valid: false,
+                reason: `Scaling is prohibited for stateful deployment "${deploymentName}". Single replica is enforced for data integrity.`
+            };
+        }
+
         // 3. Scale Parameters Check
         if (action === "SCALE_SERVICE") {
             const replicas = parseInt(parameters?.replicas, 10);

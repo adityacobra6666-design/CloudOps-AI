@@ -9,7 +9,8 @@ describe("Agent Remediation Executor & Safety Tests", () => {
         allowedActions: ["RESTART_SERVICE", "SCALE_SERVICE"],
         allowedTargetTypes: ["deployment"],
         allowedNamespaces: ["cloudops", "default"],
-        allowedDeployments: ["backend", "cloudops-backend", "cloudops-server"],
+        allowedDeployments: ["backend", "cloudops-backend", "cloudops-server", "cloudops-mongodb"],
+        statefulDeployments: ["cloudops-mongodb"],
         minReplicas: 1,
         maxReplicas: 10
     };
@@ -183,6 +184,92 @@ describe("Agent Remediation Executor & Safety Tests", () => {
         assert.equal(result.status, "REJECTED");
         assert.ok(result.error);
         assert.equal(result.commandId, "cmd-reject-test");
+    });
+
+    it("should approve valid RESTART_SERVICE command for cloudops-mongodb", () => {
+        const executor = new RemediationExecutor(mockK8sCollector, mockConfig);
+        const command = {
+            commandId: "cmd-restart-mongo",
+            action: "RESTART_SERVICE",
+            target: {
+                resourceType: "deployment",
+                name: "cloudops-mongodb",
+                namespace: "cloudops"
+            }
+        };
+
+        const check = executor.validateCommand(command);
+        assert.equal(check.valid, true);
+    });
+
+    it("should reject SCALE_SERVICE for cloudops-mongodb (stateful singleton defense-in-depth)", () => {
+        const executor = new RemediationExecutor(mockK8sCollector, mockConfig);
+        const command = {
+            commandId: "cmd-scale-mongo",
+            action: "SCALE_SERVICE",
+            target: {
+                resourceType: "deployment",
+                name: "cloudops-mongodb",
+                namespace: "cloudops"
+            },
+            parameters: { replicas: 3 }
+        };
+
+        const check = executor.validateCommand(command);
+        assert.equal(check.valid, false);
+        assert.ok(check.reason.includes("Scaling is prohibited for stateful deployment"));
+    });
+
+    it("should approve valid RESTART_SERVICE command for cloudops-backend", () => {
+        const executor = new RemediationExecutor(mockK8sCollector, mockConfig);
+        const command = {
+            commandId: "cmd-restart-backend",
+            action: "RESTART_SERVICE",
+            target: {
+                resourceType: "deployment",
+                name: "cloudops-backend",
+                namespace: "cloudops"
+            }
+        };
+
+        const check = executor.validateCommand(command);
+        assert.equal(check.valid, true);
+    });
+
+    it("should execute RESTART_SERVICE successfully and report SUCCEEDED with restartedAt state", async () => {
+        let patchedBody = null;
+        const customK8s = {
+            isInitialized: true,
+            appsApi: {
+                readNamespacedDeployment: async () => ({
+                    spec: { replicas: 1 },
+                    status: { readyReplicas: 1 }
+                }),
+                patchNamespacedDeployment: async ({ body }) => {
+                    patchedBody = body;
+                    return {};
+                }
+            }
+        };
+
+        const executor = new RemediationExecutor(customK8s, mockConfig);
+        const command = {
+            commandId: "cmd-exec-restart-1",
+            action: "RESTART_SERVICE",
+            target: {
+                resourceType: "deployment",
+                name: "cloudops-mongodb",
+                namespace: "cloudops"
+            }
+        };
+
+        const result = await executor.executeCommand(command);
+        assert.equal(result.status, "SUCCEEDED");
+        assert.equal(result.commandId, "cmd-exec-restart-1");
+        assert.ok(result.resultingState.restartedAt);
+        assert.ok(patchedBody);
+        assert.equal(patchedBody[0].path, "/spec/template/metadata/annotations");
+        assert.ok(patchedBody[0].value["kubectl.kubernetes.io/restartedAt"]);
     });
 });
 

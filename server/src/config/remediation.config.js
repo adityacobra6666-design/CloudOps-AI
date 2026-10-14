@@ -17,21 +17,32 @@ const ALLOWED_TARGETS = {
         deployment: "cloudops-backend",
         displayName: "CloudOps Backend",
         healthEndpoint: "http://server:5000/",
-        prometheusJob: "cloudops-server"
+        prometheusJob: "cloudops-server",
+        allowedActions: ["SCALE_SERVICE", "RESTART_SERVICE"]
     },
     "backend": {
         container: "cloudops-server",
         deployment: "cloudops-backend",
         displayName: "Backend Deployment",
         healthEndpoint: "http://server:5000/",
-        prometheusJob: "cloudops-server"
+        prometheusJob: "cloudops-server",
+        allowedActions: ["SCALE_SERVICE", "RESTART_SERVICE"]
     },
     "cloudops-backend": {
         container: "cloudops-server",
         deployment: "cloudops-backend",
         displayName: "CloudOps Backend Deployment",
         healthEndpoint: "http://server:5000/",
-        prometheusJob: "cloudops-server"
+        prometheusJob: "cloudops-server",
+        allowedActions: ["SCALE_SERVICE", "RESTART_SERVICE"]
+    },
+    "cloudops-mongodb": {
+        container: "cloudops-mongodb",
+        deployment: "cloudops-mongodb",
+        displayName: "CloudOps MongoDB Database",
+        healthEndpoint: null,
+        prometheusJob: "cloudops-mongodb",
+        allowedActions: ["RESTART_SERVICE"] // Scaling prohibited for stateful singleton database
     }
 };
 
@@ -42,7 +53,7 @@ const KUBERNETES_CONFIG = {
     minReplicas: 1,
     maxReplicas: 10,
     allowedNamespaces: ["cloudops", "default"],
-    allowedDeployments: ["backend", "cloudops-backend", "cloudops-server"]
+    allowedDeployments: ["backend", "cloudops-backend", "cloudops-server", "cloudops-mongodb"]
 };
 
 
@@ -121,6 +132,8 @@ const POLICY_RULES = [
                 "down", "unreachable",
                 "unresponsive", "not reachable",
                 "backend down", "service down",
+                "database down", "restart",
+                "mongodb", "mongo",
                 "health check"
             ],
             severities: ["critical"]

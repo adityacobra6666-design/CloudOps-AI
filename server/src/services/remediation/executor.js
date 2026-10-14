@@ -372,6 +372,8 @@ class AgentRemediationExecutor extends RemediationExecutor {
                     namespace,
                     previousReplicas: updated.result?.resultingState?.previousReplicas,
                     newReplicas: updated.result?.resultingState?.newReplicas || parameters.replicas,
+                    restartedAt: updated.result?.resultingState?.restartedAt,
+                    readyReplicas: updated.result?.resultingState?.readyReplicas,
                     agentId: connection.agentId
                 };
             }

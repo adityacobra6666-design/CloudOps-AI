@@ -100,13 +100,29 @@ function evaluatePolicy(incident, action, target) {
 
 
     // -------------------------------------------
-    // 2. VALIDATE TARGET
+    // 2. VALIDATE TARGET & ACTION RESTRICTIONS
     // -------------------------------------------
 
     if (!isValidTarget(target)) {
 
         const reason =
             `Target "${target}" is not in the allowed targets list`;
+
+        console.log(
+            `❌ Policy REJECTED: ${reason}`
+        );
+
+        return {
+            approved: false,
+            rule: null,
+            reason
+        };
+    }
+
+    const targetConfig = ALLOWED_TARGETS[target];
+    if (targetConfig?.allowedActions && !targetConfig.allowedActions.includes(action)) {
+        const reason =
+            `Target "${target}" does not permit action "${action}". Allowed actions: ${targetConfig.allowedActions.join(", ")}`;
 
         console.log(
             `❌ Policy REJECTED: ${reason}`
