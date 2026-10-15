@@ -427,11 +427,6 @@ exports.getTelemetry = async (req, res) => {
                 details: cloudPromHealth.details
             },
             {
-                name: "Local Prometheus",
-                status: localPromHealth.configured ? (localPromHealth.healthy ? "Connected" : "Unavailable") : "Not configured",
-                details: localPromHealth.details
-            },
-            {
                 name: isGrafanaCloudAlerting ? "Grafana Cloud Managed Alerting" : "Alertmanager",
                 status: alertStatus,
                 details: alertDetails
@@ -443,6 +438,14 @@ exports.getTelemetry = async (req, res) => {
             },
             { name: "Kubernetes Cluster", status: "Unavailable", details: "Checking cluster..." }
         ];
+
+        if (!isRenderOrProd) {
+            services.splice(3, 0, {
+                name: "Local Prometheus",
+                status: localPromHealth.configured ? (localPromHealth.healthy ? "Connected" : "Unavailable") : "Not configured",
+                details: localPromHealth.details
+            });
+        }
 
         // Ping optional services without throwing or failing main telemetry
         const optionalPings = [

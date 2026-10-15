@@ -5,7 +5,7 @@ const {
 } = require("../../config/remediation.config");
 
 // Configuration
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3-flash-preview";
 const DEFAULT_EMBED_MODEL = "text-embedding-004";
 const MAX_INPUT_CHARS = 30000;
 const REQUEST_TIMEOUT_MS = 30000;
@@ -13,6 +13,30 @@ const REQUEST_TIMEOUT_MS = 30000;
 // Rate-limiting throttle tracking
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL_MS = 250; // Max 4 requests/sec per server instance
+
+/**
+ * Format model name safely for Google GenAI SDK.
+ * Strips accidental repeated "models/" prefixes to prevent paths like "models/models/..."
+ */
+function formatModelName(model) {
+    if (!model || typeof model !== "string") return DEFAULT_MODEL;
+    let trimmed = model.trim().replace(/^['"]|['"]$/g, "");
+    if (!trimmed) return DEFAULT_MODEL;
+    // Strip one or more leading "models/" prefixes
+    trimmed = trimmed.replace(/^(models\/)+/i, "");
+    return trimmed || DEFAULT_MODEL;
+}
+
+/**
+ * Format embedding model name safely
+ */
+function formatEmbedModelName(model) {
+    if (!model || typeof model !== "string") return DEFAULT_EMBED_MODEL;
+    let trimmed = model.trim().replace(/^['"]|['"]$/g, "");
+    if (!trimmed) return DEFAULT_EMBED_MODEL;
+    trimmed = trimmed.replace(/^(models\/)+/i, "");
+    return trimmed || DEFAULT_EMBED_MODEL;
+}
 
 /**
  * Check if a Gemini API key is configured
@@ -26,14 +50,121 @@ function isGeminiConfigured() {
  * Get active model name
  */
 function getModelName() {
-    return process.env.GEMINI_MODEL || DEFAULT_MODEL;
+    return formatModelName(process.env.GEMINI_MODEL);
 }
 
 /**
  * Get embedding model name
  */
 function getEmbedModelName() {
-    return process.env.GEMINI_EMBED_MODEL || DEFAULT_EMBED_MODEL;
+    return formatEmbedModelName(process.env.GEMINI_EMBED_MODEL);
+}
+
+/**
+ * Classify Gemini API errors for safe handling and truthful health reporting
+ */
+function classifyGeminiError(err) {
+    if (!err) {
+        return {
+            category: "UNKNOWN",
+            retryable: false,
+            status: 500,
+            message: "Unknown Gemini error"
+        };
+    }
+
+    const status = err.status || err.statusCode || (err.response && err.response.status);
+    const rawMsg = String(err.message || err.details || err || "");
+    const lower = rawMsg.toLowerCase();
+
+    // 404 / Model Not Found / No longer available
+    if (
+        status === 404 ||
+        lower.includes("not found") ||
+        lower.includes("no longer available") ||
+        lower.includes("is not supported") ||
+        lower.includes("cannot find model")
+    ) {
+        return {
+            category: "MODEL_NOT_FOUND",
+            retryable: false,
+            status: 404,
+            message: `Gemini model unavailable or not found: ${rawMsg.substring(0, 150)}`
+        };
+    }
+
+    // 401 / 403 / Authentication / Permission
+    if (
+        status === 401 ||
+        status === 403 ||
+        lower.includes("api_key_invalid") ||
+        lower.includes("permission_denied") ||
+        lower.includes("api key not valid") ||
+        lower.includes("unauthenticated")
+    ) {
+        return {
+            category: "AUTH_ERROR",
+            retryable: false,
+            status: status || 401,
+            message: "Gemini API key is invalid or lacks necessary permissions."
+        };
+    }
+
+    // 429 / Quota / Rate limit
+    if (
+        status === 429 ||
+        lower.includes("429") ||
+        lower.includes("resource_exhausted") ||
+        lower.includes("quota") ||
+        lower.includes("rate limit")
+    ) {
+        return {
+            category: "RATE_LIMIT",
+            retryable: true,
+            status: 429,
+            message: "Gemini API rate limit or quota exceeded."
+        };
+    }
+
+    // Timeout
+    if (
+        lower.includes("timeout") ||
+        lower.includes("timed out") ||
+        err.code === "ETIMEDOUT" ||
+        err.code === "ECONNABORTED"
+    ) {
+        return {
+            category: "TIMEOUT",
+            retryable: true,
+            status: 504,
+            message: `Gemini API request timed out after ${REQUEST_TIMEOUT_MS}ms.`
+        };
+    }
+
+    // Upstream server errors
+    if (
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        lower.includes("unavailable") ||
+        lower.includes("overloaded") ||
+        lower.includes("bad gateway")
+    ) {
+        return {
+            category: "UPSTREAM_UNAVAILABLE",
+            retryable: true,
+            status: status || 503,
+            message: "Gemini service temporarily unavailable upstream."
+        };
+    }
+
+    return {
+        category: "CONNECTION_ERROR",
+        retryable: false,
+        status: status || 500,
+        message: rawMsg.substring(0, 150) || "Gemini connection error"
+    };
 }
 
 /**
@@ -65,7 +196,8 @@ function getClient() {
 }
 
 /**
- * Lightweight health check for Gemini API
+ * Lightweight health check for Gemini API.
+ * Never exposes the API key or claims healthy on failed real API calls.
  */
 async function checkGeminiHealth() {
     const configured = isGeminiConfigured();
@@ -101,7 +233,7 @@ async function checkGeminiHealth() {
     }
 
     try {
-        const client = getClient();
+        const client = module.exports.getClient ? module.exports.getClient() : getClient();
         const response = await client.models.generateContent({
             model,
             contents: "respond with 'pong' only",
@@ -120,12 +252,14 @@ async function checkGeminiHealth() {
             details: ok ? "Connected" : "Unresponsive"
         };
     } catch (err) {
+        const classified = classifyGeminiError(err);
         return {
             configured: true,
             healthy: false,
             isMock: false,
             model,
-            details: err.message ? err.message.substring(0, 150) : "Connection error"
+            errorCategory: classified.category,
+            details: classified.message
         };
     }
 }
@@ -143,7 +277,7 @@ async function throttle() {
 }
 
 /**
- * Execute call with timeout and bounded retry on 429/503
+ * Execute call with timeout and bounded retry on retryable errors
  */
 async function callWithRetry(fn, maxRetries = 1) {
     let attempt = 0;
@@ -153,20 +287,24 @@ async function callWithRetry(fn, maxRetries = 1) {
             return await Promise.race([
                 fn(),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error(`Gemini request timed out after ${REQUEST_TIMEOUT_MS}ms`)), REQUEST_TIMEOUT_MS)
+                    setTimeout(() => {
+                        const timeoutErr = new Error(`Gemini request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+                        timeoutErr.code = "ETIMEDOUT";
+                        reject(timeoutErr);
+                    }, REQUEST_TIMEOUT_MS)
                 )
             ]);
         } catch (err) {
             attempt++;
-            const isRetryable =
-                err.status === 429 ||
-                err.status === 503 ||
-                (err.message && (err.message.includes("429") || err.message.includes("503") || err.message.includes("RESOURCE_EXHAUSTED")));
+            const classified = classifyGeminiError(err);
 
-            if (attempt <= maxRetries && isRetryable) {
-                console.warn(`[GEMINI] Transient error (${err.message}). Retrying in 1.5s...`);
+            if (attempt <= maxRetries && classified.retryable) {
+                console.warn(`[GEMINI] Transient error (${classified.category}: ${classified.message}). Retrying in 1.5s...`);
                 await new Promise((resolve) => setTimeout(resolve, 1500));
             } else {
+                err.category = classified.category;
+                err.isRetryable = classified.retryable;
+                err.classifiedMessage = classified.message;
                 throw err;
             }
         }
@@ -349,7 +487,7 @@ CONFIDENCE:
 [State confidence percentage between 50% and 99%, e.g., 85%]
 `;
 
-    const client = getClient();
+    const client = module.exports.getClient ? module.exports.getClient() : getClient();
     const model = getModelName();
 
     const result = await callWithRetry(async () => {
@@ -431,7 +569,7 @@ Return ONLY a raw JSON object with no markdown fences, matching:
 }
 `;
 
-    const client = getClient();
+    const client = module.exports.getClient ? module.exports.getClient() : getClient();
     const model = getModelName();
 
     try {
@@ -449,7 +587,8 @@ Return ONLY a raw JSON object with no markdown fences, matching:
         const raw = result && result.text ? result.text : "";
         return parseDecision(raw);
     } catch (err) {
-        console.error("❌ Gemini remediation decision failed:", err.message);
+        const classified = classifyGeminiError(err);
+        console.error(`❌ Gemini remediation decision failed [${classified.category}]:`, classified.message);
         return null;
     }
 }
@@ -476,7 +615,7 @@ async function createEmbedding(text) {
     }
 
     try {
-        const client = getClient();
+        const client = module.exports.getClient ? module.exports.getClient() : getClient();
         const embedModel = getEmbedModelName();
         const sanitized = sanitizeInput(text).substring(0, 2048);
 
@@ -523,6 +662,12 @@ function cosineSimilarity(a, b) {
 }
 
 module.exports = {
+    DEFAULT_MODEL,
+    DEFAULT_EMBED_MODEL,
+    formatModelName,
+    formatEmbedModelName,
+    classifyGeminiError,
+    getClient,
     isGeminiConfigured,
     checkGeminiHealth,
     generateAnalysis,

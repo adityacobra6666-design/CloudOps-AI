@@ -29,7 +29,7 @@ export default function Infrastructure() {
 
     const safeServices = Array.isArray(services) ? services : [];
 
-    // Enrich services with resource usage numbers
+    // Enrich services with resource usage numbers matching production architecture
     const enrichedContainers = [
         {
             name: "backend",
@@ -52,28 +52,18 @@ export default function Infrastructure() {
             uptime: "99.99%"
         },
         {
-            name: "prometheus",
-            role: "Metrics Collector & Time-Series DB",
-            status: safeServices.find(s => s.name?.includes("Prometheus") || s.name?.includes("Metrics"))?.status || "Not Configured",
-            cpu: "8%",
-            memory: "185 MB",
-            network: "2.1 MB/s",
-            image: "prom/prometheus:v2.45.0",
-            uptime: "99.95%"
-        },
-        {
-            name: "grafana",
-            role: "Observability Dashboards",
-            status: safeServices.find(s => s.name === "Grafana")?.status || "Not Configured",
-            cpu: "3%",
-            memory: "120 MB",
-            network: "0.1 MB/s",
-            image: "grafana/grafana:10.0.0",
-            uptime: "99.90%"
+            name: "grafana-cloud-metrics",
+            role: "Grafana Cloud Managed Prometheus Telemetry",
+            status: safeServices.find(s => s.name === "Grafana Cloud Metrics")?.status || "Not Configured",
+            cpu: "Cloud Hosted",
+            memory: "Hosted Mimir",
+            network: "1.4 MB/s",
+            image: "grafana/mimir:cloud-hosted",
+            uptime: "99.99%"
         },
         {
             name: "alert-service",
-            role: "Alert Routing & Webhooks",
+            role: safeServices.find(s => s.name?.includes("Alert"))?.name || "Alert Routing & Webhooks",
             status: safeServices.find(s => s.name?.includes("Alert"))?.status || "Not Configured",
             cpu: "1%",
             memory: "45 MB",
@@ -88,10 +78,37 @@ export default function Infrastructure() {
             cpu: "Serverless",
             memory: "API Cloud",
             network: "0.2 MB/s",
-            image: "google/genai:gemini-2.5-flash",
+            image: "google/genai:gemini-3-flash-preview",
             uptime: "99.99%"
         }
     ];
+
+    // Conditionally include local monitoring containers when reported by local dev environment
+    if (safeServices.some(s => s.name === "Local Prometheus")) {
+        enrichedContainers.push({
+            name: "prometheus",
+            role: "Local Prometheus Collector & TSDB",
+            status: safeServices.find(s => s.name === "Local Prometheus")?.status || "Healthy",
+            cpu: "8%",
+            memory: "185 MB",
+            network: "2.1 MB/s",
+            image: "prom/prometheus:v2.45.0",
+            uptime: "99.95%"
+        });
+    }
+
+    if (safeServices.some(s => s.name === "Grafana")) {
+        enrichedContainers.push({
+            name: "grafana",
+            role: "Local Observability Dashboard",
+            status: safeServices.find(s => s.name === "Grafana")?.status || "Healthy",
+            cpu: "3%",
+            memory: "120 MB",
+            network: "0.1 MB/s",
+            image: "grafana/grafana:10.0.0",
+            uptime: "99.90%"
+        });
+    }
 
     const filteredContainers = enrichedContainers.filter(c => {
         if (filter === "ALL") return true;

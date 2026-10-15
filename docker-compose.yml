@@ -75,7 +75,7 @@ services:
       MONGO_URI: mongodb://mongo:27017/cloudops
 
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
       GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-text-embedding-004}
 
       ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET:-}

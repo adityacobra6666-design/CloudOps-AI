@@ -47,7 +47,7 @@ Visitor / SRE
 | `MONGODB_URI` | Yes | `mongodb+srv://...` | MongoDB connection string (Atlas or self-hosted) |
 | `JWT_SECRET` | Yes | `<random-32-chars-hex>` | Secret key for signing and verifying user session JWTs |
 | `GEMINI_API_KEY` | Yes | `AIzaSy...` | Google AI Studio API key for incident root-cause analysis |
-| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name (`gemini-2.5-flash`, `gemini-1.5-flash`) |
+| `GEMINI_MODEL` | No | `gemini-3-flash-preview` | Gemini model name (`gemini-3-flash-preview`, `gemini-1.5-flash`) |
 | `GEMINI_EMBED_MODEL`| No | `text-embedding-004` | Embedding model for incident vector search |
 | `ALERTMANAGER_WEBHOOK_SECRET` | Recommended | `<random-secret>` | Secret token required to post alerts to `/api/incidents/webhook` |
 | `GRAFANA_CLOUD_PROMETHEUS_URL` | Optional | `https://prometheus-prod-XX.../api/prom` | Base URL for backend PromQL queries to Grafana Cloud |
@@ -71,7 +71,7 @@ Visitor / SRE
 2. Add `GEMINI_API_KEY` to your backend environment settings:
    ```bash
    GEMINI_API_KEY=AIzaSyYourGeneratedApiKeyHere
-   GEMINI_MODEL=gemini-2.5-flash
+   GEMINI_MODEL=gemini-3-flash-preview
    ```
 3. **Features Powered by Gemini**:
    - **Incident Root-Cause Analysis**: Automatically diagnoses triggered alerts by correlating current symptoms with historical incident context.
@@ -153,7 +153,7 @@ When `ALERTMANAGER_WEBHOOK_SECRET` is configured on Render, any request lacking 
    MONGODB_URI = mongodb+srv://<user>:<password>@<cluster>.mongodb.net/cloudops
    JWT_SECRET = <secure-32-char-random-string>
    GEMINI_API_KEY = <your-gemini-api-key>
-   GEMINI_MODEL = gemini-2.5-flash
+   GEMINI_MODEL = gemini-3-flash-preview
    ALERTMANAGER_WEBHOOK_SECRET = <your-webhook-secret>
    ```
 3. *(Optional for direct Grafana Cloud queries)*:

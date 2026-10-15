@@ -1,14 +1,43 @@
-const { GoogleGenAI } = require("@google/genai");
-
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY
-});
+const {
+    getClient,
+    getModelName,
+    isGeminiConfigured,
+    classifyGeminiError
+} = require("./ai/gemini.service");
 
 const sleep = (ms) => {
     return new Promise((resolve) => setTimeout(resolve, ms));
 };
 
 const analyzeIncident = async (incident) => {
+    const isMock = process.env.GEMINI_MOCK === "true" || (process.env.NODE_ENV === "test" && !isGeminiConfigured());
+
+    if (isMock) {
+        return {
+            rootCause: `High resource saturation on ${incident.server || "cloudops-server"}.`,
+            impact: "Potential degradation of dependent system processes.",
+            recommendedFix: [
+                "Scale deployment replicas to restore capacity",
+                "Inspect error logs for unhandled exceptions",
+                "Verify upstream network connectivity"
+            ],
+            prevention: [
+                "Configure horizontal autoscaling policies",
+                "Calibrate alerting thresholds",
+                "Review memory and CPU resource limits"
+            ],
+            severityAssessment: {
+                appropriate: true,
+                level: incident.severity ? String(incident.severity).toUpperCase() : "HIGH",
+                reason: "Incident severity aligns with observed resource pressure."
+            }
+        };
+    }
+
+    if (!isGeminiConfigured()) {
+        throw new Error("GEMINI_API_KEY is not configured on the server. Please set GEMINI_API_KEY in your environment.");
+    }
+
     const prompt = `
 You are an expert CloudOps and DevOps incident analyst.
 
@@ -69,22 +98,24 @@ Rules:
 9. Keep the response concise and useful for a DevOps engineer.
 `;
 
-    const maxAttempts = 3;
+    const client = getClient();
+    const model = getModelName();
+    const maxAttempts = 2;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             console.log(
-                `🤖 AI analysis attempt ${attempt}/${maxAttempts}`
+                `🤖 AI analysis attempt ${attempt}/${maxAttempts} (model: ${model})`
             );
 
-            const response = await ai.models.generateContent({
-                model: "gemini-3.6-flash",
+            const response = await client.models.generateContent({
+                model,
                 contents: prompt
             });
 
             console.log("✅ AI analysis successful");
 
-            let text = response.text.trim();
+            let text = response && response.text ? response.text.trim() : "";
 
             // Remove accidental markdown code fences
             text = text
@@ -94,27 +125,28 @@ Rules:
                 .trim();
 
             const parsedAnalysis = JSON.parse(text);
-
             return parsedAnalysis;
 
         } catch (error) {
+            const classified = classifyGeminiError(error);
             console.error(
-                `❌ AI attempt ${attempt} failed:`,
-                error.message
+                `❌ AI attempt ${attempt} failed [${classified.category}]:`,
+                classified.message
             );
 
-            if (attempt === maxAttempts) {
-                throw new Error(
-                    "AI service is temporarily unavailable. Please try again."
+            if (attempt === maxAttempts || !classified.retryable) {
+                const finalErr = new Error(
+                    `AI service failure: ${classified.message}`
                 );
+                finalErr.status = classified.status;
+                finalErr.category = classified.category;
+                throw finalErr;
             }
 
-            const delay = attempt * 3000;
-
+            const delay = attempt * 2000;
             console.log(
                 `⏳ Retrying in ${delay / 1000} seconds...`
             );
-
             await sleep(delay);
         }
     }

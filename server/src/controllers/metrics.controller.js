@@ -151,27 +151,13 @@ exports.getServicesHealth = async (req, res) => {
         details: cloudPromDetails
     };
 
-    // 5. Local Prometheus
+    // 5. Local Prometheus (Preserved for local development environments)
+    let localPromSvc = null;
     let localPromStatus = "Not Configured";
-    let localPromDetails = "Local Prometheus not configured";
-    try {
-        let agentPromHealthy = false;
-        let agentName = null;
-        if (isRenderOrProd) {
-            try {
-                const activeAgent = await InfrastructureConnection.findOne({ status: "CONNECTED" }).lean();
-                if (activeAgent && activeAgent.telemetry?.metrics?.prometheusError === null) {
-                    agentPromHealthy = true;
-                    agentName = activeAgent.name;
-                }
-            } catch (_) {}
-        }
-
-        if (agentPromHealthy) {
-            localPromStatus = "Healthy";
-            localPromDetails = `Connected via CloudOps Agent (${agentName})`;
-        } else {
-            const localHealth = await checkLocalPrometheusHealth(isRenderOrProd);
+    if (!isRenderOrProd) {
+        let localPromDetails = "Local Prometheus not configured";
+        try {
+            const localHealth = await checkLocalPrometheusHealth(false);
             if (localHealth.configured) {
                 localPromStatus = localHealth.healthy ? "Healthy" : "Unavailable";
                 localPromDetails = localHealth.details;
@@ -179,16 +165,16 @@ exports.getServicesHealth = async (req, res) => {
                 localPromStatus = "Not Configured";
                 localPromDetails = localHealth.details;
             }
+        } catch (err) {
+            localPromStatus = "Unavailable";
+            localPromDetails = err.message ? err.message.substring(0, 100) : "Local Prometheus check failed";
         }
-    } catch (err) {
-        localPromStatus = "Unavailable";
-        localPromDetails = err.message ? err.message.substring(0, 100) : "Local Prometheus check failed";
+        localPromSvc = {
+            name: "Local Prometheus",
+            status: localPromStatus,
+            details: localPromDetails
+        };
     }
-    const localPromSvc = {
-        name: "Local Prometheus",
-        status: localPromStatus,
-        details: localPromDetails
-    };
 
     // 6. Alerting Architecture: Grafana Cloud Managed Alerting vs Standalone Alertmanager
     const isCloudConfigured = Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL);
@@ -250,13 +236,14 @@ exports.getServicesHealth = async (req, res) => {
         }
     }
 
-    // 7. Grafana Dashboards
-    const grafanaUrl = process.env.GRAFANA_URL || "http://grafana:3000";
-    const isLocalhostGrafana = /localhost|127\.0\.0\.1|grafana:3000/.test(grafanaUrl);
-    let grafanaStatus = "Not Configured";
-    let grafanaDetails = "Localhost dashboard — not reachable on cloud host";
+    // 7. Local Grafana Dashboard (Preserved for local development environments)
+    let grafanaSvc = null;
+    if (!isRenderOrProd) {
+        const grafanaUrl = process.env.GRAFANA_URL || "http://grafana:3000";
+        const isLocalhostGrafana = /localhost|127\.0\.0\.1|grafana:3000/.test(grafanaUrl);
+        let grafanaStatus = "Not Configured";
+        let grafanaDetails = "Localhost dashboard — not reachable on cloud host";
 
-    if (!isRenderOrProd || !isLocalhostGrafana) {
         try {
             const res = await axios.get(`${grafanaUrl}/api/health`, { timeout: 1500 });
             const ok = res.status >= 200 && res.status < 300;
@@ -266,28 +253,35 @@ exports.getServicesHealth = async (req, res) => {
             grafanaStatus = isLocalhostGrafana ? "Not Configured" : "Unavailable";
             grafanaDetails = `Unreachable at ${grafanaUrl}`;
         }
+        grafanaSvc = {
+            name: "Grafana",
+            status: grafanaStatus,
+            details: grafanaDetails
+        };
     }
-    const grafanaSvc = {
-        name: "Grafana",
-        status: grafanaStatus,
-        details: grafanaDetails
-    };
 
+    // Core production services list: Backend, MongoDB, Gemini API, Grafana Cloud Metrics, Alerting
     const services = [
         backendSvc,
         mongoSvc,
         geminiSvc,
         grafanaCloudMetricsSvc,
-        localPromSvc,
-        alertingService,
-        grafanaSvc
+        alertingService
     ];
+
+    // Local-only indicators are included only for local development environments
+    if (!isRenderOrProd) {
+        if (localPromSvc) services.push(localPromSvc);
+        if (grafanaSvc) services.push(grafanaSvc);
+    }
 
     // Global status evaluation
     const anyCritical = services.some(s => s.status === "Critical");
     const anyUnavailable = services.some(s => s.status === "Unavailable");
     const anyDegraded = services.some(s => s.status === "Degraded");
-    const primaryHealthy = isMongoHealthy && (cloudPromStatus === "Healthy" || localPromStatus === "Healthy") && geminiStatus.startsWith("Healthy");
+    const primaryHealthy = isMongoHealthy &&
+        (cloudPromStatus === "Healthy" || (!isRenderOrProd && localPromStatus === "Healthy")) &&
+        geminiStatus.startsWith("Healthy");
 
     let globalStatus = "HEALTHY";
     if (!isMongoHealthy || anyCritical) {

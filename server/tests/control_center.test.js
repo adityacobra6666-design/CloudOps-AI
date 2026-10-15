@@ -39,6 +39,34 @@ describe("Control Center Endpoints", () => {
         await controller.getServicesHealth(req, res);
     });
 
+    it("should omit local Prometheus and local Grafana from service health in production", async () => {
+        const prevRender = process.env.RENDER;
+        process.env.RENDER = "true";
+        try {
+            const req = {};
+            let result = null;
+            const res = {
+                json(data) {
+                    result = data;
+                }
+            };
+            const controller = require("../src/controllers/metrics.controller");
+            await controller.getServicesHealth(req, res);
+            assert.ok(result);
+            assert.equal(result.success, true);
+            const serviceNames = result.services.map(s => s.name);
+            assert.ok(!serviceNames.includes("Local Prometheus"), "Must not include Local Prometheus in production");
+            assert.ok(!serviceNames.includes("Grafana"), "Must not include local Grafana in production");
+            assert.ok(serviceNames.includes("Backend"), "Must include Backend");
+            assert.ok(serviceNames.includes("MongoDB"), "Must include MongoDB");
+            assert.ok(serviceNames.includes("Gemini API"), "Must include Gemini API");
+            assert.ok(serviceNames.includes("Grafana Cloud Metrics"), "Must include Grafana Cloud Metrics");
+        } finally {
+            if (prevRender === undefined) delete process.env.RENDER;
+            else process.env.RENDER = prevRender;
+        }
+    });
+
     it("should load kubernetes overview endpoint", async () => {
         const req = {};
         const res = {
