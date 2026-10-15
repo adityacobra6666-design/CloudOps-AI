@@ -87,7 +87,7 @@ const {
     checkLocalPrometheusHealth,
     getPrometheusConfig
 } = require("../services/prometheus.service");
-const geminiService = require("../services/ai/gemini.service");
+const aiProvider = require("../services/ai");
 const incidentController = require("./incidentController");
 const Incident = require("../models/Incident");
 const InfrastructureConnection = require("../models/infrastructureConnection.model");
@@ -113,23 +113,30 @@ exports.getServicesHealth = async (req, res) => {
         details: isMongoHealthy ? "Database connected" : "Database disconnected"
     };
 
-    // 3. Gemini API (Never exposes API key)
-    let geminiStatus = "Not Configured";
-    let geminiDetails = "GEMINI_API_KEY is not configured";
+    // 3. AI Model (Provider-neutral: OpenRouter or Gemini, never exposes API keys)
+    let aiStatus = "Not Configured";
+    let aiDetails = "AI provider is not configured";
+    let activeProvider = aiProvider.getProviderDisplayLabel();
+    let activeModel = "";
+
     try {
-        const gh = await geminiService.checkGeminiHealth();
-        if (gh.configured) {
-            geminiStatus = gh.healthy ? (gh.isMock ? "Healthy (Mock)" : "Healthy") : "Unavailable";
-            geminiDetails = gh.healthy ? (gh.isMock ? "Mock Mode" : (gh.model || "Connected")) : (gh.details || "API connection failed");
-        }
+        const ah = await aiProvider.checkAIHealth();
+        aiStatus = ah.status; // "Connected" | "Rate Limited" | "Unavailable" | "Not Configured"
+        aiDetails = ah.details;
+        activeProvider = ah.providerLabel || ah.provider || activeProvider;
+        activeModel = ah.model || "";
     } catch (err) {
-        geminiStatus = "Unavailable";
-        geminiDetails = err.message ? err.message.substring(0, 100) : "Failed to query Gemini API";
+        aiStatus = "Unavailable";
+        aiDetails = err.message ? err.message.substring(0, 100) : "Failed to query AI provider";
     }
-    const geminiSvc = {
-        name: "Gemini API",
-        status: geminiStatus,
-        details: geminiDetails
+
+    const aiSvc = {
+        name: "AI Model",
+        provider: activeProvider,
+        providerLabel: activeProvider,
+        status: aiStatus,
+        details: aiDetails,
+        model: activeModel
     };
 
     // 4. Grafana Cloud Metrics (Checked separately from local Prometheus)
@@ -260,11 +267,11 @@ exports.getServicesHealth = async (req, res) => {
         };
     }
 
-    // Core production services list: Backend, MongoDB, Gemini API, Grafana Cloud Metrics, Alerting
+    // Core production services list: Backend, MongoDB, AI Model, Grafana Cloud Metrics, Alerting
     const services = [
         backendSvc,
         mongoSvc,
-        geminiSvc,
+        aiSvc,
         grafanaCloudMetricsSvc,
         alertingService
     ];
@@ -278,10 +285,11 @@ exports.getServicesHealth = async (req, res) => {
     // Global status evaluation
     const anyCritical = services.some(s => s.status === "Critical");
     const anyUnavailable = services.some(s => s.status === "Unavailable");
-    const anyDegraded = services.some(s => s.status === "Degraded");
+    const anyDegraded = services.some(s => s.status === "Degraded" || s.status === "Rate Limited");
+    const isAiHealthy = aiSvc.status === "Connected" || aiSvc.status === "Healthy";
     const primaryHealthy = isMongoHealthy &&
         (cloudPromStatus === "Healthy" || (!isRenderOrProd && localPromStatus === "Healthy")) &&
-        geminiStatus.startsWith("Healthy");
+        isAiHealthy;
 
     let globalStatus = "HEALTHY";
     if (!isMongoHealthy || anyCritical) {

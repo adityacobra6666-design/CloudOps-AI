@@ -715,7 +715,7 @@ html, body, #root {
 }
 
 .status-dot-sm.healthy, .status-dot-sm.connected { background: var(--color-healthy); }
-.status-dot-sm.degraded, .status-dot-sm.warning, .status-dot-sm.awaiting-connection { background: var(--color-warning); }
+.status-dot-sm.degraded, .status-dot-sm.warning, .status-dot-sm.rate-limited, .status-dot-sm.awaiting-connection { background: var(--color-warning); }
 .status-dot-sm.critical, .status-dot-sm.unavailable { background: var(--color-critical); }
 .status-dot-sm.not-configured, .status-dot-sm.unknown { background: var(--color-text-muted); }
 
@@ -729,6 +729,25 @@ html, body, #root {
     display: flex;
     flex-direction: column;
     gap: 2px;
+}
+
+.svc-header-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.svc-provider-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: rgba(99, 102, 241, 0.14);
+    color: var(--color-primary, #6366f1);
+    border: 1px solid rgba(99, 102, 241, 0.28);
+    line-height: 1.3;
+    white-space: nowrap;
 }
 
 .svc-name {
@@ -753,7 +772,7 @@ html, body, #root {
 }
 
 .svc-badge.healthy, .svc-badge.connected { background: var(--color-healthy-bg); color: var(--color-healthy); }
-.svc-badge.degraded, .svc-badge.warning, .svc-badge.awaiting-connection { background: var(--color-warning-bg); color: var(--color-warning); }
+.svc-badge.degraded, .svc-badge.warning, .svc-badge.rate-limited, .svc-badge.awaiting-connection { background: var(--color-warning-bg); color: var(--color-warning); }
 .svc-badge.critical, .svc-badge.unavailable { background: var(--color-critical-bg); color: var(--color-critical); }
 .svc-badge.not-configured, .svc-badge.unknown { background: rgba(156, 163, 175, 0.15); color: var(--color-text-muted); }
 

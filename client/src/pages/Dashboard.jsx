@@ -922,7 +922,7 @@ const Dashboard = () => {
                 {analysis && (
                     <div className="analysis-panel">
                         <div className="analysis-header">
-                            <div className="eyebrow">RAG + GEMINI AI</div>
+                            <div className="eyebrow">RAG + AI ANALYSIS</div>
                             <h3>
                                 AI Analysis —{" "}
                                 {analysis.incident?.title || "Incident"}

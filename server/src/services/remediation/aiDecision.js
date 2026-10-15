@@ -1,5 +1,5 @@
 const axios = require("axios");
-const geminiService = require("../ai/gemini.service");
+const aiProvider = require("../ai");
 const {
     ALLOWED_ACTIONS,
     ALLOWED_TARGETS
@@ -9,14 +9,14 @@ const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 const LLM_MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b";
 
 /**
- * Generate remediation decision using Gemini API (with optional local Ollama fallback)
+ * Generate remediation decision using active AI provider (OpenRouter / Gemini, with optional local Ollama fallback)
  */
 async function generateRemediationDecision(incident, analysisText) {
     console.log("🤖 Generating remediation decision...");
 
-    // Primary path: Gemini API
-    if (geminiService.isGeminiConfigured() || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
-        return await geminiService.generateRemediationDecision(incident, analysisText);
+    // Primary path: active AI provider (OpenRouter or Gemini)
+    if (aiProvider.isAIConfigured() || process.env.OPENROUTER_MOCK === "true" || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
+        return await aiProvider.generateRemediationDecision(incident, analysisText);
     }
 
     // Secondary path: local Ollama

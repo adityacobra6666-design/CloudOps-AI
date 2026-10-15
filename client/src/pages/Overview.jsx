@@ -179,13 +179,25 @@ export default function Overview() {
                             <div className="empty-state" style={{ padding: "24px 0" }}>No services reported.</div>
                         ) : (
                             services.map((svc) => {
+                                const isAi = svc.name === "AI Model" || Boolean(svc.provider);
+                                const displayName = isAi ? "AI Model" : svc.name;
                                 const statusKey = (svc.status || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+                                const providerLabel = svc.provider ? `Provider: ${svc.provider}` : null;
                                 return (
-                                    <div key={svc.name} className="service-row" title={svc.details || undefined}>
+                                    <div
+                                        key={svc.name}
+                                        className="service-row"
+                                        title={svc.details || (isAi && svc.provider ? `AI Provider: ${svc.provider}` : undefined)}
+                                    >
                                         <div className="svc-info">
                                             <span className={`status-dot-sm ${statusKey}`} />
                                             <div className="svc-text-group">
-                                                <span className="svc-name">{svc.name}</span>
+                                                <div className="svc-header-line">
+                                                    <span className="svc-name">{displayName}</span>
+                                                    {providerLabel && (
+                                                        <span className="svc-provider-badge">{providerLabel}</span>
+                                                    )}
+                                                </div>
                                                 {svc.details && (
                                                     <span className="svc-details-text">{svc.details}</span>
                                                 )}

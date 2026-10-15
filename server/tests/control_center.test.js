@@ -59,7 +59,7 @@ describe("Control Center Endpoints", () => {
             assert.ok(!serviceNames.includes("Grafana"), "Must not include local Grafana in production");
             assert.ok(serviceNames.includes("Backend"), "Must include Backend");
             assert.ok(serviceNames.includes("MongoDB"), "Must include MongoDB");
-            assert.ok(serviceNames.includes("Gemini API"), "Must include Gemini API");
+            assert.ok(serviceNames.includes("AI Model"), "Must include AI Model");
             assert.ok(serviceNames.includes("Grafana Cloud Metrics"), "Must include Grafana Cloud Metrics");
         } finally {
             if (prevRender === undefined) delete process.env.RENDER;

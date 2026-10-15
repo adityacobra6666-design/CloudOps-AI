@@ -10,7 +10,7 @@ const {
     PROMETHEUS_URL
 } = require("../services/prometheus.service");
 const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
-const geminiService = require("../services/ai/gemini.service");
+const aiProvider = require("../services/ai");
 const incidentController = require("./incidentController");
 const Incident = require("../models/Incident");
 
@@ -133,14 +133,9 @@ exports.getTelemetry = async (req, res) => {
                     value: isAvailable ? parseFloat(val.toFixed(2)) : 0
                 }));
 
-                let geminiStatus = "Not configured";
-                let geminiDetails = "Missing GEMINI_API_KEY";
+                let aiHealth = { configured: false, healthy: false, status: "Not Configured", details: "AI provider not configured", provider: "OpenRouter" };
                 try {
-                    const gh = await geminiService.checkGeminiHealth();
-                    if (gh.configured) {
-                        geminiStatus = gh.healthy ? (gh.isMock ? "Connected (Mock)" : "Connected") : "Unavailable";
-                        geminiDetails = gh.details || gh.model;
-                    }
+                    aiHealth = await aiProvider.checkAIHealth();
                 } catch (_) {}
 
                 const alertSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
@@ -166,7 +161,7 @@ exports.getTelemetry = async (req, res) => {
                     { name: "CloudOps Agent", status: freshStatus === "CONNECTED" ? "Connected" : (freshStatus === "DEGRADED" ? "Degraded" : "Unavailable"), details: `Agent ${conn.name}` },
                     { name: "Agent Prometheus", status: (freshStatus === "CONNECTED" && promConnected) ? "Connected" : "Unavailable", details: promConnected ? "Scraping local targets" : (conn.telemetry?.metrics?.prometheusError || "Unreachable") },
                     { name: "Kubernetes Cluster", status: (conn.k8sSummary?.nodesCount || 0) > 0 ? "Connected" : "Degraded", details: `${conn.k8sSummary?.nodesCount || 0} nodes` },
-                    { name: "Gemini API", status: geminiStatus, details: geminiDetails },
+                    { name: "AI Model", provider: aiHealth.providerLabel || aiHealth.provider || "OpenRouter", status: aiHealth.status, details: aiHealth.details || aiHealth.model },
                     { name: isGrafanaCloudAlerting ? "Grafana Cloud Managed Alerting" : "Alertmanager", status: alertStatus, details: alertDetails }
                 ];
 
@@ -390,9 +385,9 @@ exports.getTelemetry = async (req, res) => {
         const cloudPromHealth = await checkGrafanaCloudHealth();
         const localPromHealth = await checkLocalPrometheusHealth(isRenderOrProd);
 
-        let geminiHealth = { configured: false, healthy: false, details: "Missing GEMINI_API_KEY" };
+        let aiHealth = { configured: false, healthy: false, status: "Not Configured", details: "AI provider not configured", provider: "OpenRouter" };
         try {
-            geminiHealth = await geminiService.checkGeminiHealth();
+            aiHealth = await aiProvider.checkAIHealth();
         } catch (_) {}
 
         const isCloudConfigured = Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL);
@@ -432,9 +427,10 @@ exports.getTelemetry = async (req, res) => {
                 details: alertDetails
             },
             {
-                name: "Gemini API",
-                status: geminiHealth.configured ? (geminiHealth.healthy ? (geminiHealth.isMock ? "Connected (Mock)" : "Connected") : "Unavailable") : "Not configured",
-                details: geminiHealth.details || (geminiHealth.configured ? geminiHealth.model : "Missing GEMINI_API_KEY")
+                name: "AI Model",
+                provider: aiHealth.providerLabel || aiHealth.provider || "OpenRouter",
+                status: aiHealth.status,
+                details: aiHealth.details || aiHealth.model
             },
             { name: "Kubernetes Cluster", status: "Unavailable", details: "Checking cluster..." }
         ];

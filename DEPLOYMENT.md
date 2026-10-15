@@ -16,7 +16,7 @@ Visitor / SRE
      ↓ HTTPS (API requests with JWT Cookie/Bearer)
 [ Render Backend: https://cloudops-ai-backend-project.onrender.com ]
      ├── MongoDB Atlas (Users, Incidents, Telemetry Snapshots, Audit Logs)
-     ├── Google Gemini API (Serverless Incident Analysis & Remediation Decision)
+     ├── AI Engine: OpenRouter API (Primary) / Google Gemini API (Configurable)
      ├── Grafana Cloud Prometheus (Metrics Querying & Dashboard Aggregation)
      └── Alertmanager / Webhook Endpoint (/api/incidents/webhook with Secret Token)
          ↑
@@ -29,7 +29,8 @@ Visitor / SRE
 
 ### Key Architectural Tenets:
 - **Zero Exposed Inbound Cluster Ports**: The backend never accesses local kubeconfigs on Render or connects directly to private minikube IPs. The registered outbound-only agent (`KUBERNETES-TEST`) polls the control plane and ships telemetry snapshots.
-- **Serverless AI**: Replaced the local Ollama dependency with Google Gemini API (`@google/genai`), enabling public deployment on cloud hosts like Render without heavyweight GPU/RAM requirements.
+- **Provider-Neutral AI Engine**: CloudOps AI supports multiple AI providers through a unified abstraction. By default, it integrates **OpenRouter** (`https://openrouter.ai/api/v1/chat/completions`) using OpenAI-compatible chat completions with configurable models (default `openrouter/free`). Google Gemini API remains fully supported and selectable via `AI_PROVIDER=gemini`.
+- **Serverless & Secure**: AI credentials reside strictly on the backend. The frontend queries service health to display a provider-neutral "AI Model" card with dynamic provider attribution (`Provider: OpenRouter` or `Provider: Gemini`) and real status (`Connected`, `Rate Limited`, `Unavailable`, `Not Configured`).
 - **Unified Observability**: The backend queries either the Connected Agent's live MongoDB snapshot (default for local cluster) or Grafana Cloud directly when configured.
 - **Authenticated Alert Ingestion**: Webhooks from Alertmanager or Grafana Cloud Managed Alerting require a shared secret token (`ALERTMANAGER_WEBHOOK_SECRET`), preventing unauthorized incident spoofing on the public internet.
 
@@ -46,8 +47,11 @@ Visitor / SRE
 | `CLIENT_URL` | Yes | `https://cloudops-ai-frontend-project.onrender.com` | Allowed frontend URL for CORS with credentials |
 | `MONGODB_URI` | Yes | `mongodb+srv://...` | MongoDB connection string (Atlas or self-hosted) |
 | `JWT_SECRET` | Yes | `<random-32-chars-hex>` | Secret key for signing and verifying user session JWTs |
-| `GEMINI_API_KEY` | Yes | `AIzaSy...` | Google AI Studio API key for incident root-cause analysis |
-| `GEMINI_MODEL` | No | `gemini-3-flash-preview` | Gemini model name (`gemini-3-flash-preview`, `gemini-1.5-flash`) |
+| `AI_PROVIDER` | No | `openrouter` | Active AI provider (`openrouter` or `gemini`) |
+| `OPENROUTER_API_KEY` | If using OpenRouter | `sk-or-v1-...` | OpenRouter API key for LLM chat completions |
+| `OPENROUTER_MODEL` | No | `openrouter/free` | OpenRouter model ID (e.g. `openrouter/free`, `anthropic/claude-3-haiku`, `meta-llama/llama-3.1-8b-instruct:free`) |
+| `GEMINI_API_KEY` | If using Gemini | `AIzaSy...` | Google AI Studio API key for Gemini incident analysis |
+| `GEMINI_MODEL` | No | `gemini-3-flash-preview` | Gemini model name (`gemini-3-flash-preview`, `gemini-2.5-flash`) |
 | `GEMINI_EMBED_MODEL`| No | `text-embedding-004` | Embedding model for incident vector search |
 | `ALERTMANAGER_WEBHOOK_SECRET` | Recommended | `<random-secret>` | Secret token required to post alerts to `/api/incidents/webhook` |
 | `GRAFANA_CLOUD_PROMETHEUS_URL` | Optional | `https://prometheus-prod-XX.../api/prom` | Base URL for backend PromQL queries to Grafana Cloud |
@@ -65,18 +69,36 @@ Visitor / SRE
 
 ## 3. Component Configuration Guides
 
-### 3.1 Google Gemini API Integration
+### 3.1 OpenRouter API Integration (Default AI Provider)
+
+1. Sign up at [OpenRouter.ai](https://openrouter.ai/) and generate an API key in **Account** → **Keys**.
+2. Configure the following environment variables on your Render backend service:
+   ```bash
+   AI_PROVIDER=openrouter
+   OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key-here
+   OPENROUTER_MODEL=openrouter/free
+   ```
+3. **Features & Protections**:
+   - **OpenAI-Compatible Chat Completions**: Dispatches requests to `https://openrouter.ai/api/v1/chat/completions`.
+   - **Rate-Limit & Quota Management**: Detects HTTP 429 rate limits, parses `retry-after` header delays, and enforces backoff without retry loops.
+   - **In-Memory Caching & Deduplication**: Repeated requests for the same incident hash are returned from cache (5-minute TTL), preventing wasted quota and duplicate concurrent calls.
+   - **Health Checking**: Validates credentials via `https://openrouter.ai/api/v1/key` without token usage, updating the Overview page with `Connected`, `Rate Limited`, `Unavailable`, or `Not Configured`.
+   - **Safety Safeguards**: Stateful components (such as MongoDB singletons) are protected against destructive scaling.
+
+---
+
+### 3.2 Google Gemini API Integration (Alternative AI Provider)
 
 1. Go to [Google AI Studio](https://aistudio.google.com/) and generate an API key.
-2. Add `GEMINI_API_KEY` to your backend environment settings:
+2. To use Gemini instead of OpenRouter, set:
    ```bash
+   AI_PROVIDER=gemini
    GEMINI_API_KEY=AIzaSyYourGeneratedApiKeyHere
    GEMINI_MODEL=gemini-3-flash-preview
    ```
 3. **Features Powered by Gemini**:
-   - **Incident Root-Cause Analysis**: Automatically diagnoses triggered alerts by correlating current symptoms with historical incident context.
-   - **Remediation Recommendation**: Evaluates incident metrics against safety rules (e.g. stateful singletons like `cloudops-mongodb` can only restart, never scale) and outputs structured recommendations.
-   - **Embeddings & Similarity**: Converts incident summaries to semantic embeddings using `text-embedding-004` to retrieve past similar outages.
+   - **Incident Root-Cause Analysis**: Diagnoses alerts by correlating current symptoms with incident logs and telemetry.
+   - **Semantic Embeddings**: Uses `text-embedding-004` for incident vector similarity.
 4. **Testing without an API Key**:
    Set `GEMINI_MOCK=true` in local development to run end-to-end tests without calling the external API.
 

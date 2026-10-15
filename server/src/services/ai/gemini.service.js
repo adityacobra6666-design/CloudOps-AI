@@ -207,16 +207,24 @@ async function checkGeminiHealth() {
     if (!configured) {
         if (isMock) {
             return {
+                name: "AI Model",
+                provider: "Gemini",
+                providerLabel: "Gemini",
                 configured: true,
                 healthy: true,
+                status: "Connected",
                 isMock: true,
                 model: `${model} (Mock Mode)`,
                 details: "Running in mock mode for testing/development"
             };
         }
         return {
+            name: "AI Model",
+            provider: "Gemini",
+            providerLabel: "Gemini",
             configured: false,
             healthy: false,
+            status: "Not Configured",
             model,
             details: "GEMINI_API_KEY is not configured"
         };
@@ -224,8 +232,12 @@ async function checkGeminiHealth() {
 
     if (isMock) {
         return {
+            name: "AI Model",
+            provider: "Gemini",
+            providerLabel: "Gemini",
             configured: true,
             healthy: true,
+            status: "Connected",
             isMock: true,
             model: `${model} (Mock Mode)`,
             details: "Configured (Mock Mode)"
@@ -245,17 +257,26 @@ async function checkGeminiHealth() {
 
         const ok = response && response.text;
         return {
+            name: "AI Model",
+            provider: "Gemini",
+            providerLabel: "Gemini",
             configured: true,
             healthy: Boolean(ok),
+            status: ok ? "Connected" : "Unavailable",
             isMock: false,
             model,
-            details: ok ? "Connected" : "Unresponsive"
+            details: ok ? `Connected (${model})` : "Unresponsive"
         };
     } catch (err) {
         const classified = classifyGeminiError(err);
+        const status = classified.category === "RATE_LIMIT" ? "Rate Limited" : "Unavailable";
         return {
+            name: "AI Model",
+            provider: "Gemini",
+            providerLabel: "Gemini",
             configured: true,
             healthy: false,
+            status,
             isMock: false,
             model,
             errorCategory: classified.category,

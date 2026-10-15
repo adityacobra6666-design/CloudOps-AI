@@ -1,5 +1,5 @@
 const axios = require("axios");
-const geminiService = require("../ai/gemini.service");
+const aiProvider = require("../ai");
 
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 const LLM_MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b";
@@ -9,23 +9,23 @@ const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text:latest";
  * Parse text response into structured AI analysis object
  */
 function parseAnalysisText(text) {
-    return geminiService.parseAnalysisText(text);
+    return aiProvider.parseAnalysisText(text);
 }
 
 /**
  * Calculate Cosine Similarity between two vectors safely
  */
 function cosineSimilarity(a, b) {
-    return geminiService.cosineSimilarity(a, b);
+    return aiProvider.cosineSimilarity(a, b);
 }
 
 /**
  * Create vector embedding for input text
- * Prefers Gemini text-embedding, falls back to Ollama if configured
+ * Prefers active AI provider (OpenRouter / Gemini), falls back to Ollama if configured
  */
 async function createEmbedding(text) {
-    if (geminiService.isGeminiConfigured() || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
-        const vec = await geminiService.createEmbedding(text);
+    if (aiProvider.isAIConfigured() || process.env.OPENROUTER_MOCK === "true" || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
+        const vec = await aiProvider.createEmbedding(text);
         if (vec) return vec;
     }
 
@@ -66,12 +66,12 @@ async function createEmbedding(text) {
 }
 
 /**
- * Generate AI Analysis using Gemini API (with optional local Ollama fallback)
+ * Generate AI Analysis using active AI provider (OpenRouter / Gemini, with optional local Ollama fallback)
  */
 async function generateAnalysis(incident, similarIncidents = []) {
-    // Primary path: Gemini API
-    if (geminiService.isGeminiConfigured() || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
-        return await geminiService.generateAnalysis(incident, similarIncidents);
+    // Primary path: active AI provider (OpenRouter or Gemini)
+    if (aiProvider.isAIConfigured() || process.env.OPENROUTER_MOCK === "true" || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
+        return await aiProvider.generateAnalysis(incident, similarIncidents);
     }
 
     // Secondary path: local Ollama if running locally without Gemini key

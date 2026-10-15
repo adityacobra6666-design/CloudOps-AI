@@ -72,13 +72,19 @@ export default function Infrastructure() {
             uptime: "99.99%"
         },
         {
-            name: "gemini-api",
-            role: "AI Incident Analysis & Remediation (Gemini API)",
-            status: safeServices.find(s => s.name?.includes("Gemini"))?.status || "Not Configured",
+            name: "ai-model",
+            role: (() => {
+                const ai = safeServices.find(s => s.name === "AI Model" || s.name?.includes("AI") || s.name?.includes("Gemini"));
+                return `AI Incident Analysis & Remediation (${ai?.provider || "OpenRouter"})`;
+            })(),
+            status: safeServices.find(s => s.name === "AI Model" || s.name?.includes("AI") || s.name?.includes("Gemini"))?.status || "Not Configured",
             cpu: "Serverless",
             memory: "API Cloud",
             network: "0.2 MB/s",
-            image: "google/genai:gemini-3-flash-preview",
+            image: (() => {
+                const ai = safeServices.find(s => s.name === "AI Model" || s.name?.includes("AI") || s.name?.includes("Gemini"));
+                return ai?.model ? `ai-model:${ai.model}` : "openrouter:openrouter/free";
+            })(),
             uptime: "99.99%"
         }
     ];
