@@ -1,325 +1,226 @@
-# CloudOps AI — Production Deployment Guide
+# CloudOps AI — Production Deployment & Cloud Architecture Guide
 
-This guide details the complete, tested process for deploying CloudOps AI to production environments using **Docker Compose** with hardened networking, reverse-proxied frontend, shielded internal telemetry, and optional **Kubernetes** connectivity.
+This guide details the complete deployment process for CloudOps AI, covering:
+1. **Public Cloud Deployment** (Render Web Services + MongoDB Atlas + Grafana Cloud + Google Gemini API).
+2. **Local & Hybrid Deployment** (Docker Compose with Prometheus remote_write and Alertmanager).
+3. **Outbound Connected Agent** (Minikube / Kubernetes remote telemetry and remediation).
 
 ---
 
-## 1. Production Architecture Overview
-
-In production mode:
-- **Client (Frontend)**: React 19 SPA built via `client/Dockerfile.prod` and served by **Nginx** on port 80 (or configurable `CLOUDOPS_PUBLIC_PORT`).
-- **Same-Origin API Routing**: Nginx serves static assets for all UI routes (with SPA `try_files` fallback) and transparently reverse-proxies `/api/` and `/health` requests to `http://server:5000`. Public visitors never depend on `localhost` or hardcoded backend ports.
-- **Backend API**: Node.js/Express service running inside the internal Docker bridge network (`cloudops`), with port 5000 bound exclusively to `127.0.0.1` for local host checks.
-- **Shielded Microservices**: MongoDB (`27017`), Ollama (`11434`), Prometheus (`9090`), Alertmanager (`9093`), and Grafana (`3000`) are bound to `127.0.0.1` (or unexposed to `0.0.0.0`), preventing public exposure while remaining fully accessible across the internal container network.
-- **Persistent Storage**: Named Docker volumes persist MongoDB data, Ollama model weights, Prometheus metrics, and Grafana state across container updates and restarts.
+## 1. System Architecture & Data Flow
 
 ```text
-Visitor / Browser
-        ↓
-  [ Port 80 / 443 (Nginx) ]
-    ├── /           → Static Built React 19 SPA (HTML/JS/CSS)
-    ├── /api/*      → Proxy to cloudops-server:5000/api/*
-    └── /health     → Proxy to cloudops-server:5000/health
-        ↓
-Internal Docker Network ("cloudops")
-    ├── cloudops-server:5000
-    ├── cloudops-mongodb:27017
-    ├── cloudops-ollama:11434 (LLM + Embeddings)
-    ├── cloudops-prometheus:9090
-    ├── cloudops-alertmanager:9093
-    ├── cloudops-grafana:3000
-    ├── cloudops-node-exporter:9100
-    └── cloudops-cadvisor:8080
+Visitor / SRE
+     ↓
+[ Render Frontend: https://cloudops-ai-frontend-project.onrender.com ]
+     ↓ HTTPS (API requests with JWT Cookie/Bearer)
+[ Render Backend: https://cloudops-ai-backend-project.onrender.com ]
+     ├── MongoDB Atlas (Users, Incidents, Telemetry Snapshots, Audit Logs)
+     ├── Google Gemini API (Serverless Incident Analysis & Remediation Decision)
+     ├── Grafana Cloud Prometheus (Metrics Querying & Dashboard Aggregation)
+     └── Alertmanager / Webhook Endpoint (/api/incidents/webhook with Secret Token)
+         ↑
+         │ (Outbound-only HTTPS polling / heartbeat / telemetry)
+[ Local / Remote Infrastructure Agent: "Arch-Minikube" ]
+     ├── Local Kubernetes (Kubeconfig / Minikube cluster: nodes, pods, deployments)
+     ├── Local Prometheus (Scraping node-exporter, cadvisor, app metrics)
+     └── Prometheus remote_write ──→ [ Grafana Cloud Metrics Store ]
 ```
+
+### Key Architectural Tenets:
+- **Zero Exposed Inbound Cluster Ports**: The backend never accesses local kubeconfigs on Render or connects directly to private minikube IPs. The registered outbound-only agent (`KUBERNETES-TEST`) polls the control plane and ships telemetry snapshots.
+- **Serverless AI**: Replaced the local Ollama dependency with Google Gemini API (`@google/genai`), enabling public deployment on cloud hosts like Render without heavyweight GPU/RAM requirements.
+- **Unified Observability**: The backend queries either the Connected Agent's live MongoDB snapshot (default for local cluster) or Grafana Cloud directly when configured.
+- **Authenticated Alert Ingestion**: Webhooks from Alertmanager or Grafana Cloud Managed Alerting require a shared secret token (`ALERTMANAGER_WEBHOOK_SECRET`), preventing unauthorized incident spoofing on the public internet.
 
 ---
 
-## 2. Prerequisites
+## 2. Environment Variables Reference
 
-| Requirement | Minimum Version | Notes |
-| :--- | :--- | :--- |
-| **Operating System** | Linux (Ubuntu, Debian, RHEL, Arch) | Any standard modern Linux distribution |
-| **Docker Engine** | 24.0+ | Docker daemon running |
-| **Docker Compose** | 2.20+ (Compose V2) | Standard `docker compose` plugin |
-| **CPU / RAM** | 4 Cores, 8 GB RAM (16 GB recommended) | Required for running Ollama LLM (`llama3.2:3b`) smoothly |
-| **Disk Space** | 20 GB free space | For Docker images, Ollama model weights, and Prometheus TSDB |
+### Render Backend (`cloudops-ai-backend-project`)
 
----
+| Variable Name | Required | Default / Example | Purpose |
+| :--- | :--- | :--- | :--- |
+| `NODE_ENV` | Yes | `production` | Enables production optimizations and security headers |
+| `PORT` | Yes | `5000` | HTTP listen port (configured automatically on Render) |
+| `CLIENT_URL` | Yes | `https://cloudops-ai-frontend-project.onrender.com` | Allowed frontend URL for CORS with credentials |
+| `MONGODB_URI` | Yes | `mongodb+srv://...` | MongoDB connection string (Atlas or self-hosted) |
+| `JWT_SECRET` | Yes | `<random-32-chars-hex>` | Secret key for signing and verifying user session JWTs |
+| `GEMINI_API_KEY` | Yes | `AIzaSy...` | Google AI Studio API key for incident root-cause analysis |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name (`gemini-2.5-flash`, `gemini-1.5-flash`) |
+| `GEMINI_EMBED_MODEL`| No | `text-embedding-004` | Embedding model for incident vector search |
+| `ALERTMANAGER_WEBHOOK_SECRET` | Recommended | `<random-secret>` | Secret token required to post alerts to `/api/incidents/webhook` |
+| `GRAFANA_CLOUD_PROMETHEUS_URL` | Optional | `https://prometheus-prod-XX.../api/prom` | Base URL for backend PromQL queries to Grafana Cloud |
+| `GRAFANA_CLOUD_PROMETHEUS_USERNAME` | Optional | `123456` | Numeric Grafana Cloud Instance ID |
+| `GRAFANA_CLOUD_PROMETHEUS_TOKEN` | Optional | `glc_...` | Access policy token with `metrics:read` scope |
+| `CORS_ORIGINS` | No | `https://cloudops-ai-frontend-project.onrender.com` | Comma-separated list of additional allowed origins |
 
-## 3. Environment Configuration
+### Render Frontend (`cloudops-ai-frontend-project`)
 
-### Step 1: Create Environment File
-```bash
-cp server/.env.example server/.env
-```
-
-### Step 2: Configure Environment Variables
-Edit `server/.env` with your production settings:
-
-```bash
-# Server Environment
-NODE_ENV=production
-PORT=5000
-
-# MongoDB (supports either MONGO_URI or MONGODB_URI)
-MONGO_URI=mongodb://mongo:27017/cloudops
-# For MongoDB Atlas:
-# MONGODB_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/cloudops?retryWrites=true&w=majority
-
-# JWT Authentication (generate with: openssl rand -hex 32)
-JWT_SECRET=replace_with_a_secure_random_key_at_least_32_characters
-
-# Ollama AI / LLM & RAG Service
-OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL=llama3.2:3b
-OLLAMA_EMBED_MODEL=nomic-embed-text:latest
-
-# Monitoring Services
-PROMETHEUS_URL=http://prometheus:9090
-GRAFANA_URL=http://grafana:3000
-ALERTMANAGER_URL=http://alertmanager:9093
-GF_ADMIN_USER=admin
-GF_ADMIN_PASSWORD=replace_with_secure_grafana_password
-
-# CORS Allowed Origins (comma-separated)
-CORS_ORIGINS=http://localhost,http://127.0.0.1,https://your-domain.com
-
-# Public URL (for password reset links)
-FRONTEND_PUBLIC_URL=https://your-domain.com
-
-# Kubernetes (set to true if cluster connectivity is available)
-KUBERNETES_ENABLED=true
-KUBERNETES_NAMESPACE=cloudops
-```
-
-> 🚨 **SECURITY CHECKLIST**:
-> - Never commit `.env` to Git.
-> - Generate a unique, strong `JWT_SECRET` (`openssl rand -hex 32`).
-> - Set a strong `GF_ADMIN_PASSWORD`.
-> - Never expose internal ports (`27017`, `11434`, `9090`, `9093`) directly to the public internet without firewall rules or VPN/SSH tunnels.
+| Variable Name | Required | Example | Purpose |
+| :--- | :--- | :--- | :--- |
+| `VITE_API_URL` | Yes | `https://cloudops-ai-backend-project.onrender.com/api` | Base API endpoint consumed by the React app |
 
 ---
 
-## 4. Production Deployment Commands
+## 3. Component Configuration Guides
 
-### Option A: One-Command Production Script (Recommended)
-```bash
-./scripts/deploy-prod.sh
-# or using npm:
-npm run deploy:prod
-```
+### 3.1 Google Gemini API Integration
 
-This automated script:
-1. Verifies Docker and Compose prerequisites.
-2. Validates `server/.env` (verifies `JWT_SECRET` and `MONGO_URI`/`MONGODB_URI`).
-3. Validates Compose configuration syntax.
-4. Builds the production Nginx container and starts all services in detached mode (`-d`).
-5. Waits for the backend and frontend health endpoints to return HTTP 200.
-6. Prints the deployment summary.
-
-### Option B: Native Docker Compose Command
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
-
----
-
-## 5. Ollama AI Model Provisioning
-
-Models are stored in the persistent Docker volume `cloudops-ai-ollama-data`. On a fresh deployment where models have not yet been downloaded, pull the required models once:
-
-```bash
-# 1. Pull the LLM for root-cause analysis and remediation decisions
-docker exec cloudops-ollama ollama pull llama3.2:3b
-
-# 2. Pull the embedding model for RAG vector retrieval
-docker exec cloudops-ollama ollama pull nomic-embed-text:latest
-```
-
-*Note: Once pulled, these models remain saved in persistent storage across container restarts and updates.*
-
----
-
-## 6. Health & Verification Checks
-
-Run the automated health check:
-```bash
-./scripts/health-check.sh
-# or
-npm run health:check
-```
-
-Or run manual inspection commands:
-```bash
-# 1. Direct Backend Health
-curl -s http://127.0.0.1:5000/health | jq .
-
-# Expected output:
-# {
-#   "success": true,
-#   "status": "healthy",
-#   "timestamp": "...",
-#   "dependencies": {
-#     "database": "healthy",
-#     "prometheus": "healthy",
-#     "ollama": "healthy"
-#   }
-# }
-
-# 2. Public Frontend via Nginx Reverse Proxy
-curl -I http://localhost/
-
-# 3. Same-Origin API Check via Reverse Proxy
-curl -s http://localhost/api/health | jq .
-
-# 4. Service and Container Status
-./scripts/status.sh
-# or
-npm run status
-```
-
----
-
-## 7. Connecting Kubernetes in Production
-
-CloudOps AI supports three flexible paths to connect to Kubernetes:
-
-### Path A: Running CloudOps Inside Kubernetes (In-Cluster)
-If CloudOps AI runs inside a Kubernetes cluster:
-1. The server automatically detects `/var/run/secrets/kubernetes.io/serviceaccount/token`.
-2. Apply the RBAC permissions using `k8s/manifests/rbac.yaml`:
+1. Go to [Google AI Studio](https://aistudio.google.com/) and generate an API key.
+2. Add `GEMINI_API_KEY` to your backend environment settings:
    ```bash
-   kubectl apply -f k8s/manifests/rbac.yaml
+   GEMINI_API_KEY=AIzaSyYourGeneratedApiKeyHere
+   GEMINI_MODEL=gemini-2.5-flash
    ```
-
-### Path B: External Kubernetes Cluster via Kubeconfig
-To connect the Docker Compose backend to an external or managed cluster (e.g., EKS, GKE, AKS, or remote control plane):
-1. Place the kubeconfig file securely on the host (e.g., `/etc/cloudops/kubeconfig.yaml`).
-2. Point `KUBECONFIG` to that path, or mount it into the container.
-3. CloudOps AI will automatically authenticate using the provided cluster credentials.
-
-### Path C: Remote Infrastructure Connector Agent (Outbound Only)
-If the Kubernetes cluster or Prometheus server resides behind a private corporate firewall or private VPC without inbound ports:
-1. Open the CloudOps UI at **Infrastructure Connections** (`/connections`).
-2. Click **Add Connection** to generate a secure enrollment token.
-3. Deploy the lightweight connector agent from the `agent/` directory directly onto the private cluster. The agent initiates an outbound-only HTTPS tunnel to CloudOps AI.
+3. **Features Powered by Gemini**:
+   - **Incident Root-Cause Analysis**: Automatically diagnoses triggered alerts by correlating current symptoms with historical incident context.
+   - **Remediation Recommendation**: Evaluates incident metrics against safety rules (e.g. stateful singletons like `cloudops-mongodb` can only restart, never scale) and outputs structured recommendations.
+   - **Embeddings & Similarity**: Converts incident summaries to semantic embeddings using `text-embedding-004` to retrieve past similar outages.
+4. **Testing without an API Key**:
+   Set `GEMINI_MOCK=true` in local development to run end-to-end tests without calling the external API.
 
 ---
 
-## 8. Public HTTPS & Domain Setup (Reverse Proxy)
+### 3.2 Grafana Cloud Metrics Forwarding (Prometheus `remote_write`)
 
-When deploying to a public VPS with a domain name (e.g., `cloudops.example.com`), configure HTTPS termination in front of port 80.
+To ship metrics from your local cluster or Docker environment to Grafana Cloud:
 
-### Example Caddyfile (Automatic Let's Encrypt SSL):
-```caddy
-cloudops.example.com {
-    reverse_proxy localhost:80
-}
-```
+1. In your **Grafana Cloud Portal**, open **Prometheus** → **Send Metrics**.
+2. Note your:
+   - **Remote Write Endpoint**: e.g. `https://prometheus-prod-10-prod-us-central-0.grafana.net/api/prom/push`
+   - **Username / Instance ID**: e.g. `1425890`
+   - **Password / Token**: An Access Policy token with `metrics:write` permission.
+3. **Using `monitoring/prometheus/prometheus.cloud.yml`**:
+   Start Prometheus with environment variable expansion enabled:
+   ```bash
+   export GRAFANA_CLOUD_REMOTE_WRITE_URL="https://prometheus-prod-XX.grafana.net/api/prom/push"
+   export GRAFANA_CLOUD_USER="1425890"
+   export GRAFANA_CLOUD_API_KEY="glc_your_token_here"
 
-### Example Nginx Host Configuration with Certbot:
-```nginx
-server {
-    server_name cloudops.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:80;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-Run `certbot --nginx -d cloudops.example.com` to obtain free TLS certificates.
+   prometheus --config.file=monitoring/prometheus/prometheus.cloud.yml --enable-feature=expand-env
+   ```
+4. **Importing the CloudOps Dashboard**:
+   - In Grafana Cloud, navigate to **Dashboards** → **New** → **Import**.
+   - Upload [monitoring/prometheus/grafana-cloud-dashboard.json](file:///home/aadi/Projects/CloudOps-AI/monitoring/prometheus/grafana-cloud-dashboard.json).
+   - Select your Grafana Cloud Prometheus data source.
+   - You will see live panels for Host CPU, Host Memory, HTTP Request Rate, 5xx Error Rate, P95 Latency, and Container Network throughput.
 
 ---
 
-## 9. Stopping, Updating, and Backups
+### 3.3 Alerting & Webhook Pipeline
 
-### Stopping Production Services
-```bash
-./scripts/stop-prod.sh
-# or
-npm run stop:prod
+CloudOps AI supports alerts from Prometheus Alertmanager or Grafana Cloud Managed Alerting:
+
+#### A. Configure Alert Rules
+The alert rules in [monitoring/prometheus/alerts.yml](file:///home/aadi/Projects/CloudOps-AI/monitoring/prometheus/alerts.yml) monitor:
+- `HighHostCPU` (CPU > 80% for 30s)
+- `HighHostMemory` (Memory > 85% for 30s)
+- `HighHTTPErrorRate` (5xx server error rate > 5% for 30s)
+- `HighP95Latency` (HTTP P95 latency > 500ms for 1m)
+- `CloudOpsServerDown` (`up{job="cloudops-server"} == 0` for 15s)
+- `PrometheusScrapeTargetMissing` (any target down for 1m)
+
+#### B. Configure Webhook Delivery
+In [monitoring/alertmanager/alertmanager.yml](file:///home/aadi/Projects/CloudOps-AI/monitoring/alertmanager/alertmanager.yml):
+```yaml
+receivers:
+  - name: cloudops-backend
+    webhook_configs:
+      - url: "https://cloudops-ai-backend-project.onrender.com/api/incidents/webhook?token=your_secure_alertmanager_webhook_secret_here"
+        send_resolved: true
+        max_alerts: 50
 ```
 
-### Applying Code Updates
-```bash
-git pull
-./scripts/deploy-prod.sh
-```
+#### C. Webhook Authentication Methods
+Webhooks can authenticate via any of the following:
+1. **Query parameter**: `?token=<secret>`
+2. **HTTP Header**: `X-Webhook-Token: <secret>`
+3. **Bearer Authorization**: `Authorization: Bearer <secret>`
 
-### Database Backup
-```bash
-# Dump MongoDB data from the host
-docker exec cloudops-mongodb mongodump --archive=/data/db/backup-$(date +%F).archive --gzip
-```
+When `ALERTMANAGER_WEBHOOK_SECRET` is configured on Render, any request lacking the valid token is rejected with `401 Unauthorized`.
 
-### Troubleshooting Common Issues
-| Issue | Cause | Fix |
+---
+
+## 4. Render Public Deployment Steps
+
+### Step 1: Deploy Backend (`cloudops-ai-backend-project`)
+1. In the **Render Dashboard**, select your Web Service: `cloudops-ai-backend-project`.
+2. Go to **Environment** and verify/add:
+   ```text
+   NODE_ENV = production
+   CLIENT_URL = https://cloudops-ai-frontend-project.onrender.com
+   MONGODB_URI = mongodb+srv://<user>:<password>@<cluster>.mongodb.net/cloudops
+   JWT_SECRET = <secure-32-char-random-string>
+   GEMINI_API_KEY = <your-gemini-api-key>
+   GEMINI_MODEL = gemini-2.5-flash
+   ALERTMANAGER_WEBHOOK_SECRET = <your-webhook-secret>
+   ```
+3. *(Optional for direct Grafana Cloud queries)*:
+   ```text
+   GRAFANA_CLOUD_PROMETHEUS_URL = https://prometheus-prod-XX.../api/prom
+   GRAFANA_CLOUD_PROMETHEUS_USERNAME = <instance-id>
+   GRAFANA_CLOUD_PROMETHEUS_TOKEN = <glc_token>
+   ```
+4. Click **Manual Deploy** → **Deploy latest commit**.
+
+### Step 2: Deploy Frontend (`cloudops-ai-frontend-project`)
+1. In the **Render Dashboard**, select your Static Site: `cloudops-ai-frontend-project`.
+2. Go to **Environment** and ensure:
+   ```text
+   VITE_API_URL = https://cloudops-ai-backend-project.onrender.com/api
+   ```
+3. Click **Manual Deploy** → **Deploy latest commit**.
+
+---
+
+## 5. Public Endpoint Verification Commands
+
+After deployment, verify all public endpoints from your terminal:
+
+### 1. Verify Backend Health Probe
+```bash
+curl -s -i https://cloudops-ai-backend-project.onrender.com/health
+```
+*Expected: HTTP 200 OK with `status: "healthy"` and `dependencies.database: "healthy"`.*
+
+### 2. Verify Observability Telemetry (Connected Agent Source of Truth)
+```bash
+curl -s https://cloudops-ai-backend-project.onrender.com/api/observability/telemetry?connectionId=local | jq '{success, provider, dataStatus, services}'
+```
+*Expected: `dataStatus: "CONNECTED"`, services reporting truthful statuses for Backend API, MongoDB, Agent, and Gemini API.*
+
+### 3. Verify Direct Grafana Cloud Diagnostics
+```bash
+curl -s https://cloudops-ai-backend-project.onrender.com/api/observability/telemetry?connectionId=grafana_cloud | jq '{success, provider, providerError}'
+```
+*Expected: When configured without metrics ingestion, returns informative note directing to remote_write setup.*
+
+### 4. Test Authenticated Alert Webhook (Dry Run)
+```bash
+curl -s -X POST https://cloudops-ai-backend-project.onrender.com/api/incidents/webhook?token=your_secure_alertmanager_webhook_secret_here \
+  -H "Content-Type: application/json" \
+  -d '{"alerts":[]}' | jq .
+```
+*Expected: `{"success": true, "message": "No alerts in payload", "created": 0, "updated": 0, "resolved": 0}`.*
+
+### 5. Verify Unauthorized Webhook Rejection
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://cloudops-ai-backend-project.onrender.com/api/incidents/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"alerts":[]}'
+```
+*Expected: `401` Unauthorized when `ALERTMANAGER_WEBHOOK_SECRET` is set.*
+
+---
+
+## 6. Troubleshooting Guide
+
+| Issue | Root Cause | Solution |
 | :--- | :--- | :--- |
-| `port 80 already in use` | Another web server (e.g. Apache/Nginx) is running on port 80 | Set `CLOUDOPS_PUBLIC_PORT=8080` before running `./scripts/deploy-prod.sh`, or stop the competing service. |
-| `Missing required environment variables` | `server/.env` is missing or lacks `JWT_SECRET`/`MONGO_URI` | Ensure `server/.env` exists and contains valid settings. |
-| `Ollama returns status: unavailable` | Ollama container is starting or model is not pulled | Run `docker exec cloudops-ollama ollama pull llama3.2:3b`. |
-| `Kubernetes status shows disconnected` | Kubeconfig not configured or no cluster reachable | CloudOps continues functioning. Connect a cluster via `KUBECONFIG` or the Outbound Agent. |
-
----
-
-## 9. Render Deployment & Grafana Cloud Prometheus Integration
-
-When hosting the backend and frontend on **Render**, live metrics are streamed via **Grafana Cloud Prometheus**.
-
-### Required Architecture
-```
-React Frontend (Render Static Site)
-      ↓ (Authenticated Telemetry API calls: /api/observability/telemetry)
-Express Backend (Render Web Service)
-      ↓ (HTTP Basic Auth: Instance ID + metrics:read Access Policy Token)
-Grafana Cloud Prometheus API (/api/v1/query, /api/v1/query_range)
-```
-
-> 🔒 **Security Rules**:
-> - All Grafana Cloud credentials reside exclusively in the Render Backend Environment Variables.
-> - The frontend never accesses Grafana Cloud directly and receives zero credentials.
-> - Never add Grafana Cloud tokens to `VITE_` frontend environment variables.
-
-### Render Backend Environment Variables
-In the Render Dashboard for your **CloudOps Backend Web Service**, navigate to **Environment** and configure:
-
-| Environment Variable | Description | Example |
-| :--- | :--- | :--- |
-| `GRAFANA_CLOUD_PROMETHEUS_URL` | Base API/query URL for your Grafana Cloud hosted metrics (without trailing slashes) | `https://prometheus-prod-10-prod-us-central-0.grafana.net/api/prom` |
-| `GRAFANA_CLOUD_PROMETHEUS_USERNAME` | Grafana Cloud Prometheus instance ID / metrics username | `123456` |
-| `GRAFANA_CLOUD_PROMETHEUS_TOKEN` | Access Policy Token with `metrics:read` scope | `glc_eyJvIjoi...` |
-
-### How It Works:
-1. **Detection**: If `GRAFANA_CLOUD_PROMETHEUS_URL` is set, the backend automatically operates in `grafana_cloud` provider mode using HTTP Basic Auth.
-2. **Local Fallback**: If those variables are unset, the backend seamlessly falls back to `PROMETHEUS_URL` (default `http://prometheus:9090`) for local Docker development.
-3. **Data Availability**: If metrics (such as host node exporter metrics) are not ingested into Grafana Cloud, the backend reports `available: false` and the frontend gracefully displays `—` and `Unavailable` without fabricating false zero telemetry.
-
----
-
-## 10. Kubernetes & Minikube Deployment
-
-CloudOps AI includes production-ready Kubernetes manifests designed for local development on **Minikube** and cluster environments.
-
-- **Manifests Location**: `k8s/`
-- **Detailed Documentation**: See [k8s/README.md](file:///home/aadi/Projects/cloud-Project/CloudOps-AI/k8s/README.md) for full commands, shell-agnostic scripts, and architectures.
-
-### Quick Start:
-```bash
-# 1. Build and load backend image into Minikube
-docker build -t cloudops-backend:local -f server/Dockerfile server/
-minikube image load cloudops-backend:local
-
-# 2. Configure secrets safely without leaking to terminal
-./k8s/scripts/setup-secrets.sh
-
-# 3. Deploy full stack to Minikube
-./k8s/scripts/deploy.sh
-
-# 4. Check status and health
-./k8s/scripts/status.sh
-```
+| **Grafana Cloud displays "No data"** | Prometheus `remote_write` is not configured on the metrics publisher | Configure `monitoring/prometheus/prometheus.cloud.yml` or Grafana Alloy to ship local TSDB metrics to your Grafana Cloud instance. |
+| **Alert Webhook returns 401 Unauthorized** | Webhook is missing the secret token or using an invalid token | Pass `?token=<secret>` or add header `X-Webhook-Token: <secret>` matching `ALERTMANAGER_WEBHOOK_SECRET`. |
+| **Gemini AI reports "Not configured"** | `GEMINI_API_KEY` is not set in Render Environment | Create an API key at [Google AI Studio](https://aistudio.google.com/) and paste it into Render backend environment settings. |
+| **Gemini API returns 429 Resource Exhausted** | Free tier per-minute quota reached | The backend automatically throttles requests (min 250ms interval) and retries once. For higher throughput, attach a billing account to your Google Cloud project. |
+| **Agent shows "STALE" or "DISCONNECTED"** | Local machine is asleep or systemd agent is stopped | Check status locally: `systemctl --user status cloudops-agent.service`. Ensure Minikube is running (`minikube status`). |
+| **Frontend displays "Failed to fetch"** | CORS mismatch or missing `VITE_API_URL` | Confirm `VITE_API_URL=https://cloudops-ai-backend-project.onrender.com/api` and backend has allowed the frontend origin. |

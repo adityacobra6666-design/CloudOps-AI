@@ -74,6 +74,24 @@ exports.getIncidents = async (req,res)=>{
 };
 exports.alertWebhook = async (req, res) => {
     try {
+        // Authenticate webhook when a secret is configured in environment
+        const configuredSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
+        if (configuredSecret) {
+            const authHeader = req.headers["authorization"] || "";
+            const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+            const customHeaderToken = req.headers["x-webhook-token"];
+            const queryToken = req.query?.token;
+
+            const providedToken = customHeaderToken || bearerToken || queryToken;
+            if (!providedToken || providedToken !== configuredSecret) {
+                console.warn("⚠️ [ALERT WEBHOOK] Unauthorized webhook attempt: invalid or missing token");
+                return res.status(401).json({
+                    success: false,
+                    message: "Unauthorized: Invalid or missing webhook token"
+                });
+            }
+        }
+
         const payload = req.body || {};
         const alerts = payload.alerts || [];
 

@@ -8,10 +8,10 @@ const {
     PROMETHEUS_URL
 } = require("../services/prometheus.service");
 const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
+const geminiService = require("../services/ai/gemini.service");
 
 const GRAFANA_URL = process.env.GRAFANA_URL || "http://grafana:3000";
 const ALERTMANAGER_URL = process.env.ALERTMANAGER_URL || "http://alertmanager:9093";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 
 /**
  * Range parameter helper
@@ -129,10 +129,26 @@ exports.getTelemetry = async (req, res) => {
                     value: isAvailable ? parseFloat(val.toFixed(2)) : 0
                 }));
 
+                let geminiStatus = "Not configured";
+                let geminiDetails = "Missing GEMINI_API_KEY";
+                try {
+                    const gh = await geminiService.checkGeminiHealth();
+                    if (gh.configured) {
+                        geminiStatus = gh.healthy ? (gh.isMock ? "Connected (Mock)" : "Connected") : "Unavailable";
+                        geminiDetails = gh.details || gh.model;
+                    }
+                } catch (_) {}
+
+                const alertSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
+
                 const services = [
-                    { name: "CloudOps Agent", status: freshStatus === "CONNECTED" ? "Healthy" : "Critical" },
-                    { name: "Connected Prometheus", status: (freshStatus === "CONNECTED" && promConnected) ? "Healthy" : "Critical" },
-                    { name: "Kubernetes Cluster", status: (conn.k8sSummary?.nodesCount || 0) > 0 ? "Healthy" : "Degraded" }
+                    { name: "Backend API", status: "Connected", details: "Node.js Express API" },
+                    { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Connected" : "Unavailable", details: mongoose.connection.readyState === 1 ? "Database connected" : "Database disconnected" },
+                    { name: "CloudOps Agent", status: freshStatus === "CONNECTED" ? "Connected" : (freshStatus === "DEGRADED" ? "Degraded" : "Unavailable"), details: `Agent ${conn.name}` },
+                    { name: "Agent Prometheus", status: (freshStatus === "CONNECTED" && promConnected) ? "Connected" : "Unavailable", details: promConnected ? "Scraping local targets" : (conn.telemetry?.metrics?.prometheusError || "Unreachable") },
+                    { name: "Kubernetes Cluster", status: (conn.k8sSummary?.nodesCount || 0) > 0 ? "Connected" : "Degraded", details: `${conn.k8sSummary?.nodesCount || 0} nodes` },
+                    { name: "Gemini API", status: geminiStatus, details: geminiDetails },
+                    { name: "Alert Delivery", status: alertSecret ? "Connected" : "Not configured", details: alertSecret ? "Webhook authentication active" : "Webhook secret not configured" }
                 ];
 
                 return res.json({
@@ -353,50 +369,60 @@ exports.getTelemetry = async (req, res) => {
         // 9. Service Health checks
         const isRenderOrProd = Boolean(process.env.RENDER || process.env.NODE_ENV === "production");
         const promHealth = await checkPrometheusHealth();
+        let geminiHealth = { configured: false, healthy: false, details: "Missing GEMINI_API_KEY" };
+        try {
+            geminiHealth = await geminiService.checkGeminiHealth();
+        } catch (_) {}
+
+        const alertSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
 
         const services = [
-            { name: "Backend", status: "Healthy" },
-            { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Healthy" : "Critical" },
+            { name: "Backend API", status: "Connected", details: "Node.js Express API" },
+            { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Connected" : "Unavailable", details: mongoose.connection.readyState === 1 ? "Database connected" : "Database disconnected" },
             {
-                name: config.isCloud ? "Grafana Cloud Prometheus" : "Prometheus",
-                status: promHealth.healthy ? "Healthy" : (config.isCloud ? "Critical" : (isRenderOrProd ? "Unavailable" : "Critical")),
-                details: promHealth.error || (promHealth.healthy ? "Connected" : "Unreachable")
+                name: config.isCloud ? "Grafana Cloud Prometheus" : "Local Prometheus",
+                status: promHealth.healthy ? (config.isCloud && totalNetVal === null && cpuValue === null ? "Degraded" : "Connected") : (config.isCloud ? "Unavailable" : (isRenderOrProd ? "Not configured" : "Unavailable")),
+                details: promHealth.error || (config.isCloud && totalNetVal === null && cpuValue === null ? "Connected but no metrics ingested" : (promHealth.healthy ? "Connected" : (isRenderOrProd ? "Not running on cloud host" : "Unreachable")))
             },
-            { name: "Alertmanager", status: "Unavailable" },
-            { name: "Ollama", status: "Unavailable" },
-            { name: "Kubernetes", status: "Unavailable" }
+            {
+                name: "Alert Delivery",
+                status: alertSecret ? "Connected" : (isRenderOrProd ? "Not configured" : "Unavailable"),
+                details: alertSecret ? "Webhook authentication active" : (isRenderOrProd ? "Webhook secret not configured" : "Local Alertmanager")
+            },
+            {
+                name: "Gemini API",
+                status: geminiHealth.configured ? (geminiHealth.healthy ? (geminiHealth.isMock ? "Connected (Mock)" : "Connected") : "Unavailable") : "Not configured",
+                details: geminiHealth.details || (geminiHealth.configured ? geminiHealth.model : "Missing GEMINI_API_KEY")
+            },
+            { name: "Kubernetes Cluster", status: "Unavailable", details: "Checking cluster..." }
         ];
 
         // Ping optional services without throwing or failing main telemetry
         await Promise.allSettled([
             axios.get(`${ALERTMANAGER_URL}/-/healthy`, { timeout: 1500 })
                 .then(() => {
-                    const svc = services.find(s => s.name === "Alertmanager");
-                    if (svc) svc.status = "Healthy";
+                    const svc = services.find(s => s.name === "Alert Delivery");
+                    if (svc) {
+                        svc.status = "Connected";
+                        svc.details = "Alertmanager reachable";
+                    }
                 })
-                .catch(() => {
-                    const svc = services.find(s => s.name === "Alertmanager");
-                    if (svc) svc.status = isRenderOrProd ? "Unavailable" : "Degraded";
-                }),
-
-            axios.get(`${OLLAMA_URL}/api/version`, { timeout: 1500 })
-                .then(() => {
-                    const svc = services.find(s => s.name === "Ollama");
-                    if (svc) svc.status = "Healthy";
-                })
-                .catch(() => {
-                    const svc = services.find(s => s.name === "Ollama");
-                    if (svc) svc.status = isRenderOrProd ? "Unavailable" : "Degraded";
-                }),
+                .catch(() => {}),
 
             kubernetesService.getClusterStatus()
                 .then((k8sStatus) => {
-                    const svc = services.find(s => s.name === "Kubernetes");
-                    if (svc) svc.status = k8sStatus.connected ? "Healthy" : (isRenderOrProd ? "Not configured" : "Degraded");
+                    const svc = services.find(s => s.name === "Kubernetes Cluster");
+                    if (svc) {
+                        svc.status = k8sStatus.connected ? "Connected" : (isRenderOrProd ? "Not configured" : "Degraded");
+                        svc.details = k8sStatus.context ? `Context: ${k8sStatus.context}` : (k8sStatus.connected ? "Connected" : "No cluster connected");
+                    }
                 })
                 .catch(() => {
-                    const svc = services.find(s => s.name === "Kubernetes");
-                    if (svc) svc.status = isRenderOrProd ? "Not configured" : "Degraded";
+                    const svc = services.find(s => s.name === "Kubernetes Cluster");
+                    if (svc) {
+                        svc.status = isRenderOrProd ? "Not configured" : "Degraded";
+                        svc.details = isRenderOrProd ? "Not configured on cloud host" : "Unreachable";
+                    }
                 })
         ]);
 

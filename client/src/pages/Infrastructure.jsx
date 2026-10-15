@@ -82,14 +82,14 @@ export default function Infrastructure() {
             uptime: "99.99%"
         },
         {
-            name: "ollama",
-            role: "LLM Inference Engine (Llama 3.2)",
-            status: safeServices.find(s => s.name === "Ollama")?.status || "Healthy",
-            cpu: "12%",
-            memory: "1.8 GB",
-            network: "0.3 MB/s",
-            image: "ollama/ollama:latest",
-            uptime: "99.85%"
+            name: "gemini-api",
+            role: "AI Incident Analysis & Remediation (Gemini API)",
+            status: safeServices.find(s => s.name?.includes("Gemini") || s.name === "Ollama")?.status || "Connected",
+            cpu: "Serverless",
+            memory: "API Cloud",
+            network: "0.2 MB/s",
+            image: "google/genai:gemini-2.5-flash",
+            uptime: "99.99%"
         }
     ];
 

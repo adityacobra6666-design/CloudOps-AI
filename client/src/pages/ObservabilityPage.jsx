@@ -139,22 +139,29 @@ export default function ObservabilityPage() {
 
     const getStatusClass = (status) => {
         switch (status) {
+            case "Connected":
+            case "Connected (Mock)":
             case "Healthy": return "healthy";
+            case "Degraded":
+            case "Stale":
             case "Warning": return "warning";
-            case "Critical": return "critical";
-            case "Unavailable":
-            case "Not configured": return "unknown";
+            case "Critical":
+            case "Unavailable": return "critical";
+            case "Not configured":
             default: return "unknown";
         }
     };
 
     const getServiceDotColor = (status) => {
         switch (status) {
+            case "Connected":
             case "Healthy": return "#16A34A";
+            case "Connected (Mock)": return "#0EA5E9";
             case "Degraded":
+            case "Stale":
             case "Warning": return "#F59E0B";
             case "Critical": return "#DC2626";
-            case "Unavailable":
+            case "Unavailable": return "#EF4444";
             case "Not configured":
             default: return "#64748B";
         }

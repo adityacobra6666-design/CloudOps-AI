@@ -1,42 +1,30 @@
 const axios = require("axios");
-
+const geminiService = require("../ai/gemini.service");
 const {
     ALLOWED_ACTIONS,
     ALLOWED_TARGETS
 } = require("../../config/remediation.config");
 
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
+const LLM_MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b";
 
-const OLLAMA_URL =
-    process.env.OLLAMA_URL || "http://ollama:11434";
+/**
+ * Generate remediation decision using Gemini API (with optional local Ollama fallback)
+ */
+async function generateRemediationDecision(incident, analysisText) {
+    console.log("🤖 Generating remediation decision...");
 
-const LLM_MODEL =
-    process.env.OLLAMA_MODEL || "llama3.2:3b";
+    // Primary path: Gemini API
+    if (geminiService.isGeminiConfigured() || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
+        return await geminiService.generateRemediationDecision(incident, analysisText);
+    }
 
-
-// =========================================
-// GENERATE REMEDIATION DECISION
-// =========================================
-
-async function generateRemediationDecision(
-    incident,
-    analysisText
-) {
-
-    console.log(
-        "🤖 Generating remediation decision..."
-    );
-
-
-    const allowedActionsList =
-        ALLOWED_ACTIONS.join(", ");
-
-    const allowedTargetsList =
-        Object.keys(ALLOWED_TARGETS).join(", ");
-
+    // Secondary path: local Ollama
+    const allowedActionsList = ALLOWED_ACTIONS.join(", ");
+    const allowedTargetsList = Object.keys(ALLOWED_TARGETS).join(", ");
 
     const prompt = `
 You are CloudOps AI, an SRE remediation assistant.
-
 Based on the following incident and analysis, recommend a single remediation action.
 
 INCIDENT:
@@ -47,7 +35,7 @@ Category: ${incident.category || "N/A"}
 Source: ${incident.source || "N/A"}
 
 ANALYSIS:
-${analysisText || "No analysis available."}
+${typeof analysisText === "object" ? `${analysisText.rootCause || ""} ${analysisText.recommendation || ""}` : (analysisText || "No analysis available.")}
 
 ALLOWED ACTIONS (you MUST pick one of these or NONE):
 ${allowedActionsList}
@@ -72,165 +60,32 @@ Rules:
 6. Return ONLY the JSON object.
 `;
 
-
     try {
-
         const response = await axios.post(
             `${OLLAMA_URL}/api/generate`,
             {
                 model: LLM_MODEL,
                 prompt,
                 stream: false
-            }
+            },
+            { timeout: 15000 }
         );
 
-
-        const raw =
-            response.data.response || "";
-
-        console.log(
-            "📝 Raw AI remediation response received"
-        );
-
-
+        const raw = response.data?.response || "";
+        console.log("📝 Raw AI remediation response received from Ollama fallback");
         return parseDecision(raw);
-
-
     } catch (error) {
-
-        console.error(
-            "❌ AI remediation decision failed:",
-            error.message
-        );
-
+        console.error("❌ AI remediation decision failed:", error.message);
         return null;
     }
 }
 
-
-// =========================================
-// PARSE DECISION FROM LLM OUTPUT
-// =========================================
-
+/**
+ * Parse decision from LLM output (delegated to geminiService for unified validation)
+ */
 function parseDecision(raw) {
-
-    try {
-
-        // Strip markdown code fences
-        let text = raw.trim();
-
-        text = text
-            .replace(/^```json\s*/i, "")
-            .replace(/^```\s*/i, "")
-            .replace(/\s*```$/i, "")
-            .trim();
-
-
-        // Try to extract JSON object
-        const jsonMatch =
-            text.match(/\{[\s\S]*\}/);
-
-        if (!jsonMatch) {
-
-            console.error(
-                "❌ No JSON object found in AI response"
-            );
-
-            return null;
-        }
-
-
-        const parsed = JSON.parse(jsonMatch[0]);
-
-
-        // Validate required fields
-        if (!parsed.action || !parsed.target) {
-
-            console.error(
-                "❌ AI response missing action or target"
-            );
-
-            return null;
-        }
-
-
-        // NONE means no action recommended
-        if (
-            parsed.action === "NONE" ||
-            parsed.action === "none"
-        ) {
-
-            console.log(
-                "ℹ️ AI recommends no remediation action"
-            );
-
-            return null;
-        }
-
-
-        // Validate action is in allowed list
-        if (!ALLOWED_ACTIONS.includes(parsed.action)) {
-
-            console.error(
-                `❌ AI returned invalid action: "${parsed.action}"`
-            );
-
-            return null;
-        }
-
-
-        // Validate target is in allowed list
-        if (!(parsed.target in ALLOWED_TARGETS)) {
-
-            console.error(
-                `❌ AI returned invalid target: "${parsed.target}"`
-            );
-
-            return null;
-        }
-
-
-        // Normalize confidence
-        let confidence =
-            parseFloat(parsed.confidence);
-
-        if (
-            isNaN(confidence) ||
-            confidence < 0 ||
-            confidence > 1
-        ) {
-            confidence = 0.5;
-        }
-
-
-        const decision = {
-            action: parsed.action,
-            target: parsed.target,
-            reason:
-                String(parsed.reason || "AI recommended action").substring(0, 500),
-            confidence
-        };
-
-
-        console.log(
-            `✅ Remediation decision: ${decision.action} → ${decision.target} (confidence: ${decision.confidence})`
-        );
-
-
-        return decision;
-
-
-    } catch (error) {
-
-        console.error(
-            "❌ Failed to parse AI remediation decision:",
-            error.message
-        );
-
-        return null;
-    }
+    return geminiService.parseDecision(raw);
 }
-
 
 module.exports = {
     generateRemediationDecision,

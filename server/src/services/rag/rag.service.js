@@ -1,48 +1,35 @@
 const axios = require("axios");
+const geminiService = require("../ai/gemini.service");
 
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 const LLM_MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b";
 const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text:latest";
 
 /**
- * Parse Ollama text response into structured AI analysis object
+ * Parse text response into structured AI analysis object
  */
 function parseAnalysisText(text) {
-    if (!text || typeof text !== "string") {
-        return {
-            rootCause: "No specific root cause generated.",
-            evidence: "Based on telemetry metrics & Alertmanager payload.",
-            recommendation: "Scaling or restarting service instance.",
-            confidence: 85,
-            rawText: ""
-        };
-    }
+    return geminiService.parseAnalysisText(text);
+}
 
-    const cleanText = text.trim();
-    const extractSection = (headingRegex, nextHeadingsRegex) => {
-        const match = cleanText.match(new RegExp(`(?:\\*\\*|#+)?\\s*${headingRegex}\\s*(?:\\*\\*)?:?\\s*([\\s\\S]*?)(?=(?:\\*\\*|#+)?\\s*(?:${nextHeadingsRegex})\\s*(?:\\*\\*)?:?|$)`, "i"));
-        return match && match[1] ? match[1].trim() : "";
-    };
-
-    const rootCause = extractSection("ROOT\\s*CAUSE", "EVIDENCE|RECOMMENDATION|CONFIDENCE");
-    const evidence = extractSection("EVIDENCE", "RECOMMENDATION|CONFIDENCE");
-    const recommendation = extractSection("RECOMMENDATION", "CONFIDENCE");
-    const confMatch = cleanText.match(/CONFIDENCE(?:\s*SCORE)?:?\s*(\d+)%/i) || cleanText.match(/(\d+)%/);
-    const confidence = confMatch ? parseInt(confMatch[1], 10) : 85;
-
-    return {
-        rootCause: rootCause || cleanText,
-        evidence: evidence || "Based on telemetry metrics & Alertmanager payload.",
-        recommendation: recommendation || "Review logs and scale/restart affected service.",
-        confidence,
-        rawText: cleanText
-    };
+/**
+ * Calculate Cosine Similarity between two vectors safely
+ */
+function cosineSimilarity(a, b) {
+    return geminiService.cosineSimilarity(a, b);
 }
 
 /**
  * Create vector embedding for input text
+ * Prefers Gemini text-embedding, falls back to Ollama if configured
  */
 async function createEmbedding(text) {
+    if (geminiService.isGeminiConfigured() || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
+        const vec = await geminiService.createEmbedding(text);
+        if (vec) return vec;
+    }
+
+    // Secondary fallback: local Ollama if explicitly available
     const modelsToTry = [
         EMBED_MODEL,
         "nomic-embed-text:latest",
@@ -50,16 +37,12 @@ async function createEmbedding(text) {
     ];
 
     let lastError = null;
-
     for (const model of modelsToTry) {
         try {
             const response = await axios.post(
                 `${OLLAMA_URL}/api/embed`,
-                {
-                    model,
-                    input: text
-                },
-                { timeout: 10000 }
+                { model, input: text },
+                { timeout: 5000 }
             );
 
             if (
@@ -78,42 +61,20 @@ async function createEmbedding(text) {
         }
     }
 
-    console.warn(`[RAG] createEmbedding fallback notice: ${lastError?.message || "No vector generated"}`);
+    console.warn(`[RAG] createEmbedding notice: ${lastError?.message || "No vector generated"}`);
     return null;
 }
 
 /**
- * Calculate Cosine Similarity between two vectors safely
- */
-function cosineSimilarity(a, b) {
-    if (!a || !b || !Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0 || a.length !== b.length) {
-        return 0;
-    }
-
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-        const valA = Number(a[i]) || 0;
-        const valB = Number(b[i]) || 0;
-        dot += valA * valB;
-        normA += valA * valA;
-        normB += valB * valB;
-    }
-
-    if (normA === 0 || normB === 0) {
-        return 0;
-    }
-
-    const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
-    return isNaN(similarity) || !isFinite(similarity) ? 0 : similarity;
-}
-
-/**
- * Generate AI Analysis using Llama 3.2
+ * Generate AI Analysis using Gemini API (with optional local Ollama fallback)
  */
 async function generateAnalysis(incident, similarIncidents = []) {
+    // Primary path: Gemini API
+    if (geminiService.isGeminiConfigured() || process.env.GEMINI_MOCK === "true" || process.env.NODE_ENV === "test") {
+        return await geminiService.generateAnalysis(incident, similarIncidents);
+    }
+
+    // Secondary path: local Ollama if running locally without Gemini key
     const context = Array.isArray(similarIncidents) && similarIncidents.length > 0
         ? similarIncidents.map((item, index) => {
             const rc = typeof item.aiAnalysis === "object" ? item.aiAnalysis?.rootCause : item.aiAnalysis;
@@ -132,37 +93,18 @@ AI Recommendation: ${rec || "Not available"}
 
     const prompt = `
 You are CloudOps AI, an SRE assistant.
-
 Analyze this infrastructure incident using the incident information and historical incidents.
 
-CURRENT INCIDENT
+CURRENT INCIDENT:
+Title: ${incident.title}
+Description: ${incident.description || "N/A"}
+Severity: ${incident.severity}
+Category: ${incident.category || "N/A"}
+Source: ${incident.source || "N/A"}
+Target: ${incident.server || "N/A"}
 
-Title:
-${incident.title}
-
-Description:
-${incident.description || "N/A"}
-
-Severity:
-${incident.severity}
-
-Category:
-${incident.category || "N/A"}
-
-Source:
-${incident.source || "N/A"}
-
-Environment:
-${incident.environment || "Local / Cluster"}
-
-Infrastructure Target:
-${incident.server || "N/A"}
-
-
-HISTORICAL INCIDENTS
-
+HISTORICAL INCIDENTS:
 ${context}
-
 
 Return exactly these sections:
 
@@ -179,24 +121,15 @@ CONFIDENCE:
 Give a confidence percentage (e.g. 85%).
 `;
 
-    const modelsToTry = [
-        LLM_MODEL,
-        "llama3.2:3b",
-        "llama3.2"
-    ];
-
+    const modelsToTry = [LLM_MODEL, "llama3.2:3b", "llama3.2"];
     let lastError = null;
 
     for (const model of modelsToTry) {
         try {
             const response = await axios.post(
                 `${OLLAMA_URL}/api/generate`,
-                {
-                    model,
-                    prompt,
-                    stream: false
-                },
-                { timeout: 90000 }
+                { model, prompt, stream: false },
+                { timeout: 15000 }
             );
 
             if (response.data && response.data.response) {
@@ -204,11 +137,10 @@ Give a confidence percentage (e.g. 85%).
             }
         } catch (err) {
             lastError = err;
-            console.error(`[RAG] generateAnalysis failed for model ${model}:`, err.message);
         }
     }
 
-    throw new Error(`Ollama AI generation failed: ${lastError?.message || "Ollama service unavailable"}`);
+    throw new Error(`AI incident analysis unavailable: GEMINI_API_KEY is not configured and Ollama is unreachable (${lastError?.message || "No AI provider available"})`);
 }
 
 module.exports = {

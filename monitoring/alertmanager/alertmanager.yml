@@ -3,11 +3,16 @@ global:
 
 route:
   receiver: cloudops-backend
-  group_wait: 5s
-  group_interval: 10s
+  group_by: ['alertname', 'cluster', 'service', 'job']
+  group_wait: 10s
+  group_interval: 30s
   repeat_interval: 1h
 
 receivers:
   - name: cloudops-backend
     webhook_configs:
-      - url: http://server:5000/api/incidents/webhook
+      # In local docker-compose: http://server:5000/api/incidents/webhook
+      # If using webhook secret token: append ?token=${ALERTMANAGER_WEBHOOK_SECRET} or configure http_config
+      - url: "http://server:5000/api/incidents/webhook"
+        send_resolved: true
+        max_alerts: 50

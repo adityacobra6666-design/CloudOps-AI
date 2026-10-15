@@ -1,93 +1,133 @@
 groups:
-
-  - name: cloudops-alerts
-
+  - name: cloudops-infrastructure-alerts
     rules:
-
-      # Local Development & Demo Trigger Alert
+      # =========================================================
+      # 1. LOCAL DEVELOPMENT & DEMO TRIGGER ALERT
+      # =========================================================
       - alert: SimulatedBackendFailure
-
         expr: cloudops_http_requests_total{route="/api/test-error", status_code="500"} > 0
-
         for: 5s
-
         labels:
           severity: critical
           category: infrastructure
-
+          service: cloudops-server
         annotations:
           summary: "Simulated Backend Service Failure"
-          description: "500 Internal Server Error detected on /api/test-error endpoint"
+          description: "500 Internal Server Error detected on /api/test-error test endpoint"
 
-
-      # Backend Down
+      # =========================================================
+      # 2. BACKEND AVAILABILITY
+      # =========================================================
       - alert: CloudOpsServerDown
-
         expr: up{job="cloudops-server"} == 0
-
         for: 15s
-
         labels:
           severity: critical
-
+          category: infrastructure
+          service: cloudops-server
         annotations:
-          summary: "CloudOps backend down"
-          description: "Backend is not reachable"
+          summary: "CloudOps Backend Unreachable"
+          description: "CloudOps API backend instance is not responding to Prometheus scrape checks"
 
-
-      # High HTTP Errors
+      # =========================================================
+      # 3. HIGH HTTP ERROR RATE
+      # =========================================================
       - alert: HighHTTPErrorRate
-
         expr: |
           (
             sum(rate(cloudops_http_requests_total{status_code=~"5.."}[2m]))
             /
-            clamp_min(sum(rate(cloudops_http_requests_total[2m])),0.001)
-          ) > 0.01
-
+            clamp_min(sum(rate(cloudops_http_requests_total[2m])), 0.001)
+          ) > 0.05
         for: 30s
-
         labels:
           severity: critical
-
+          category: application
+          service: cloudops-server
         annotations:
-          summary: "High HTTP error rate"
-          description: "5xx errors above threshold"
+          summary: "Elevated HTTP 5xx Error Rate"
+          description: "HTTP 5xx server errors exceeded 5% over a 2-minute rolling window"
 
-
-      # High CPU
+      # =========================================================
+      # 4. HIGH CPU UTILIZATION
+      # =========================================================
       - alert: HighHostCPU
-
         expr: |
           100 * (
             1 - avg(rate(node_cpu_seconds_total{mode="idle"}[2m]))
           ) > 80
-
         for: 30s
-
         labels:
           severity: warning
-
+          category: infrastructure
+          service: node-exporter
         annotations:
-          summary: "High CPU usage"
-          description: "CPU usage crossed 80%"
+          summary: "High Host CPU Utilization"
+          description: "Host CPU utilization has exceeded 80% for more than 30 seconds"
 
+      # =========================================================
+      # 5. HIGH MEMORY UTILIZATION
+      # =========================================================
+      - alert: HighHostMemory
+        expr: |
+          100 * (
+            1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+          ) > 85
+        for: 30s
+        labels:
+          severity: warning
+          category: infrastructure
+          service: node-exporter
+        annotations:
+          summary: "High Host Memory Utilization"
+          description: "Host available memory dropped below 15% (memory usage > 85%) for more than 30 seconds"
 
-      # Container Memory
-      - alert: ContainerHighMemory
-
+      # =========================================================
+      # 6. HIGH P95 LATENCY
+      # =========================================================
+      - alert: HighP95Latency
         expr: |
           (
-          container_memory_usage_bytes{name!=""}
-          /
-          container_spec_memory_limit_bytes{name!=""}
-          ) > 0.85
-
-        for: 30s
-
+            histogram_quantile(0.95, sum(rate(cloudops_http_request_duration_seconds_bucket[5m])) by (le))
+          ) > 0.500
+        for: 1m
         labels:
           severity: warning
-
+          category: performance
+          service: cloudops-server
         annotations:
-          summary: "Container memory high"
-          description: "Container memory usage above 85%"
+          summary: "High P95 Response Latency"
+          description: "95th percentile HTTP latency exceeded 500ms over a 5-minute window"
+
+      # =========================================================
+      # 7. SCRAPE TARGET MISSING / PROMETHEUS DOWN
+      # =========================================================
+      - alert: PrometheusScrapeTargetMissing
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: monitoring
+          service: prometheus
+        annotations:
+          summary: "Prometheus Monitoring Target Unreachable"
+          description: "A configured scrape target ({{ $labels.job }} at {{ $labels.instance }}) is down"
+
+      # =========================================================
+      # 8. CONTAINER MEMORY LIMIT BREACH
+      # =========================================================
+      - alert: ContainerHighMemory
+        expr: |
+          (
+            container_memory_usage_bytes{name!=""}
+            /
+            container_spec_memory_limit_bytes{name!=""}
+          ) > 0.85
+        for: 30s
+        labels:
+          severity: warning
+          category: infrastructure
+          service: cadvisor
+        annotations:
+          summary: "Container Memory Near Limit"
+          description: "Container {{ $labels.name }} memory usage is above 85% of its configured limit"
