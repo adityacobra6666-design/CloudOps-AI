@@ -38,6 +38,7 @@ function parseRangeParams(rangeStr) {
 }
 
 const InfrastructureConnection = require("../models/infrastructureConnection.model");
+const { computeFreshStatus, isTelemetryFresh, resolveConnection } = require("./infrastructure.controller");
 
 /**
  * Combined Network Rx + Tx range series generator
@@ -83,23 +84,40 @@ exports.getTelemetry = async (req, res) => {
     try {
         const { connectionId } = req.query || {};
 
-        // If a connected infrastructure environment is requested
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
-            if (conn) {
-                const metrics = conn.telemetry?.metrics || {};
+        // Resolve connection: explicit ID, or "local" / omitted resolving to connected agent
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
+                const freshStatus = computeFreshStatus(conn);
+                const recordedAt = conn.telemetry?.recordedAt;
+                const telemetryFresh = isTelemetryFresh(recordedAt);
+                const metrics = conn.telemetry?.metrics;
+                const promConnected = metrics && metrics.prometheusConnected !== false;
+
+                const isAvailable = freshStatus === "CONNECTED" && telemetryFresh && Boolean(metrics) && promConnected;
+
+                let providerLabel = `Agent: ${conn.name}`;
+                if (freshStatus === "DISCONNECTED") {
+                    providerLabel = `Agent: ${conn.name} (Disconnected)`;
+                } else if (!telemetryFresh) {
+                    providerLabel = `Agent: ${conn.name} (Telemetry Stale)`;
+                } else if (!promConnected) {
+                    providerLabel = `Agent: ${conn.name} (Prometheus Unavailable)`;
+                } else {
+                    providerLabel = `Agent: ${conn.name} (Connected and data fresh)`;
+                }
+
                 const safeNum = (v, fallback = 0) => {
                     const n = parseFloat(v);
                     return isNaN(n) ? fallback : n;
                 };
 
-                const cpuVal = safeNum(metrics.cpu);
-                const memVal = safeNum(metrics.memory);
-                const reqRateVal = safeNum(metrics.requestRate);
-                const errRateVal = safeNum(metrics.errorRate);
-                const p95Val = safeNum(metrics.p95Latency);
-                const netRxVal = safeNum(metrics.networkRx);
-                const netTxVal = safeNum(metrics.networkTx);
+                const cpuVal = safeNum(metrics?.cpu);
+                const memVal = safeNum(metrics?.memory);
+                const reqRateVal = safeNum(metrics?.requestRate);
+                const errRateVal = safeNum(metrics?.errorRate);
+                const p95Val = safeNum(metrics?.p95Latency);
+                const netRxVal = safeNum(metrics?.networkRx);
+                const netTxVal = safeNum(metrics?.networkTx);
                 const totalNetVal = netRxVal + netTxVal;
 
                 const now = Math.floor(Date.now() / 1000);
@@ -108,12 +126,12 @@ exports.getTelemetry = async (req, res) => {
                     timestamp: ts,
                     time: new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
                     fullTime: new Date(ts * 1000).toISOString(),
-                    value: parseFloat(val.toFixed(2))
+                    value: isAvailable ? parseFloat(val.toFixed(2)) : 0
                 }));
 
                 const services = [
-                    { name: "CloudOps Agent", status: conn.status === "CONNECTED" ? "Healthy" : "Critical" },
-                    { name: "Connected Prometheus", status: conn.status === "CONNECTED" ? "Healthy" : "Critical" },
+                    { name: "CloudOps Agent", status: freshStatus === "CONNECTED" ? "Healthy" : "Critical" },
+                    { name: "Connected Prometheus", status: (freshStatus === "CONNECTED" && promConnected) ? "Healthy" : "Critical" },
                     { name: "Kubernetes Cluster", status: (conn.k8sSummary?.nodesCount || 0) > 0 ? "Healthy" : "Degraded" }
                 ];
 
@@ -121,51 +139,54 @@ exports.getTelemetry = async (req, res) => {
                     success: true,
                     environment: conn.environment,
                     connectionName: conn.name,
-                    status: conn.status,
+                    status: freshStatus,
+                    freshStatus,
+                    telemetryFresh,
+                    dataStatus: isAvailable ? "CONNECTED" : (freshStatus === "DISCONNECTED" ? "DISCONNECTED" : (!telemetryFresh ? "STALE" : "PROMETHEUS_UNAVAILABLE")),
                     provider: "connected_agent",
-                    providerLabel: `Agent: ${conn.name}`,
+                    providerLabel,
                     range: req.query.range || "30m",
-                    timestamp: conn.telemetry?.recordedAt || new Date().toISOString(),
+                    timestamp: recordedAt || new Date().toISOString(),
                     summary: {
                         cpu: {
-                            value: parseFloat(cpuVal.toFixed(1)),
+                            value: isAvailable ? parseFloat(cpuVal.toFixed(1)) : 0,
                             unit: "%",
-                            status: cpuVal > 85 ? "Critical" : cpuVal > 70 ? "Warning" : "Healthy",
-                            available: true,
+                            status: !isAvailable ? (freshStatus === "DISCONNECTED" ? "Unavailable" : "Warning") : (cpuVal > 85 ? "Critical" : cpuVal > 70 ? "Warning" : "Healthy"),
+                            available: isAvailable,
                             label: "Agent CPU"
                         },
                         memory: {
-                            value: parseFloat(memVal.toFixed(1)),
+                            value: isAvailable ? parseFloat(memVal.toFixed(1)) : 0,
                             unit: "%",
-                            status: memVal > 90 ? "Critical" : memVal > 75 ? "Warning" : "Healthy",
-                            available: true,
+                            status: !isAvailable ? (freshStatus === "DISCONNECTED" ? "Unavailable" : "Warning") : (memVal > 90 ? "Critical" : memVal > 75 ? "Warning" : "Healthy"),
+                            available: isAvailable,
                             label: "Agent Memory"
                         },
                         requestRate: {
-                            value: parseFloat(reqRateVal.toFixed(2)),
+                            value: isAvailable ? parseFloat(reqRateVal.toFixed(2)) : 0,
                             unit: "req/s",
-                            status: "Healthy",
-                            available: true
+                            status: isAvailable ? "Healthy" : "Unavailable",
+                            available: isAvailable
                         },
                         errorRate: {
-                            value: parseFloat(errRateVal.toFixed(2)),
+                            value: isAvailable ? parseFloat(errRateVal.toFixed(2)) : 0,
                             unit: "%",
-                            status: errRateVal > 5 ? "Critical" : errRateVal > 1 ? "Warning" : "Healthy",
-                            available: true
+                            status: !isAvailable ? "Unavailable" : (errRateVal > 5 ? "Critical" : errRateVal > 1 ? "Warning" : "Healthy"),
+                            available: isAvailable
                         },
                         p95Latency: {
-                            value: Math.round(p95Val),
+                            value: isAvailable ? Math.round(p95Val) : 0,
                             unit: "ms",
-                            status: p95Val > 500 ? "Critical" : p95Val > 200 ? "Warning" : "Healthy",
-                            available: true
+                            status: !isAvailable ? "Unavailable" : (p95Val > 500 ? "Critical" : p95Val > 200 ? "Warning" : "Healthy"),
+                            available: isAvailable
                         },
                         network: {
-                            value: totalNetVal > 1024 ? parseFloat((totalNetVal / 1024).toFixed(2)) : parseFloat(totalNetVal.toFixed(1)),
+                            value: isAvailable ? (totalNetVal > 1024 ? parseFloat((totalNetVal / 1024).toFixed(2)) : parseFloat(totalNetVal.toFixed(1))) : 0,
                             unit: totalNetVal > 1024 ? "MB/s" : "KB/s",
-                            rx: parseFloat(netRxVal.toFixed(1)),
-                            tx: parseFloat(netTxVal.toFixed(1)),
-                            status: "Healthy",
-                            available: true
+                            rx: isAvailable ? parseFloat(netRxVal.toFixed(1)) : 0,
+                            tx: isAvailable ? parseFloat(netTxVal.toFixed(1)) : 0,
+                            status: isAvailable ? "Healthy" : "Unavailable",
+                            available: isAvailable
                         }
                     },
                     metrics: {
@@ -178,14 +199,13 @@ exports.getTelemetry = async (req, res) => {
                             timestamp: ts,
                             time: new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
                             fullTime: new Date(ts * 1000).toISOString(),
-                            rx: parseFloat(netRxVal.toFixed(1)),
-                            tx: parseFloat(netTxVal.toFixed(1))
+                            rx: isAvailable ? parseFloat(netRxVal.toFixed(1)) : 0,
+                            tx: isAvailable ? parseFloat(netTxVal.toFixed(1)) : 0
                         }))
                     },
                     services
                 });
             }
-        }
 
         const { rangeKey, start, end, step } = parseRangeParams(req.query.range);
         const config = getPrometheusConfig();
@@ -324,6 +344,11 @@ exports.getTelemetry = async (req, res) => {
 
         // Helper to format numeric values safely
         const round = (val, dec = 1) => (val !== null && isFinite(val) ? parseFloat(val.toFixed(dec)) : null);
+
+        // Detect Grafana Cloud connected but missing data ingestion
+        if (config.isCloud && !providerError && cpuValue === null && memValue === null && reqRateValue === null) {
+            providerError = "Grafana Cloud Prometheus is connected, but has received no metric data for the selected range. Verify that Prometheus remote_write or Grafana Alloy is configured to export metrics to Grafana Cloud, or select the Connected Agent environment.";
+        }
 
         // 9. Service Health checks
         const isRenderOrProd = Boolean(process.env.RENDER || process.env.NODE_ENV === "production");

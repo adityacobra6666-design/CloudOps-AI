@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
 const { createExecutor } = require("../services/remediation/executor");
 const { evaluatePolicy } = require("../services/remediation/policyEngine");
@@ -6,6 +7,9 @@ const RemediationAction = require("../models/remediationAction.model");
 const Incident = require("../models/Incident");
 const InfrastructureConnection = require("../models/infrastructureConnection.model");
 const { REMEDIATION_STATUS } = require("../config/remediation.config");
+const { computeFreshStatus, isTelemetryFresh, resolveConnection } = require("./infrastructure.controller");
+
+exports.resolveConnection = resolveConnection;
 
 // =========================================
 // GET KUBERNETES OVERVIEW
@@ -14,12 +18,49 @@ exports.getKubernetesOverview = async (req, res) => {
     try {
         const { namespace, connectionId } = req.query || {};
 
-        // If a connected infrastructure environment is selected
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
-            if (conn) {
-                const k8sSummary = conn.k8sSummary || {};
-                let recentActions = [];
+        // Resolve connection: explicit ID or connected-agent for local cluster
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
+            const freshStatus = computeFreshStatus(conn);
+            const k8sSummary = conn.k8sSummary || {};
+            const telemetryFresh = isTelemetryFresh(k8sSummary.updatedAt);
+            const k8sConnected = k8sSummary.clusterConnected !== false;
+            const hasK8sError = Boolean(k8sSummary.k8sError);
+
+            let dataStatus = "CONNECTED";
+            let statusMessage = "Connected and data fresh";
+
+            if (freshStatus === "REVOKED") {
+                dataStatus = "REVOKED";
+                statusMessage = "Agent connection has been revoked";
+            } else if (freshStatus === "DISCONNECTED") {
+                dataStatus = "DISCONNECTED";
+                statusMessage = "Agent disconnected";
+            } else if (freshStatus === "DEGRADED") {
+                dataStatus = "DEGRADED";
+                statusMessage = "Agent heartbeat delayed / connection degraded";
+            } else if (!k8sSummary.updatedAt) {
+                dataStatus = "PENDING";
+                statusMessage = "Waiting for initial cluster telemetry from agent";
+            } else if (!telemetryFresh) {
+                dataStatus = "STALE";
+                statusMessage = "Connected but telemetry stale";
+            } else if (!k8sConnected || hasK8sError) {
+                dataStatus = "KUBERNETES_ERROR";
+                statusMessage = k8sSummary.k8sError || "Kubernetes query failed on agent";
+            } else if (
+                (k8sSummary.nodesCount || 0) === 0 &&
+                (k8sSummary.deploymentsCount || 0) === 0 &&
+                (k8sSummary.podsCount || 0) === 0
+            ) {
+                dataStatus = "NO_RESOURCES";
+                statusMessage = "No resources genuinely found";
+            }
+
+            const isConnected = freshStatus === "CONNECTED" && telemetryFresh && k8sConnected && !hasK8sError;
+
+            let recentActions = [];
+            if (mongoose.connection.readyState === 1) {
                 try {
                     recentActions = await RemediationAction.find({
                         connection: conn._id
@@ -31,60 +72,97 @@ exports.getKubernetesOverview = async (req, res) => {
                 } catch (dbErr) {
                     recentActions = [];
                 }
-
-                return res.json({
-                    success: true,
-                    configured: true,
-                    connected: conn.status === "CONNECTED",
-                    environment: conn.environment,
-                    connectionName: conn.name,
-                    cluster: {
-                        server: conn.name,
-                        context: conn.agentId,
-                        source: `Connected Agent (${conn.name})`,
-                        status: conn.status
-                    },
-                    counts: {
-                        nodes: k8sSummary.nodesCount || k8sSummary.nodes?.length || 0,
-                        pods: k8sSummary.podsCount || k8sSummary.pods?.length || 0,
-                        deployments: k8sSummary.deploymentsCount || k8sSummary.deployments?.length || 0,
-                        services: k8sSummary.servicesCount || k8sSummary.services?.length || 0
-                    },
-                    namespace: namespace || "cloudops",
-                    nodes: k8sSummary.nodes || [],
-                    pods: k8sSummary.pods || [],
-                    deployments: k8sSummary.deployments || [],
-                    services: k8sSummary.services || [],
-                    recentActions
-                });
             }
+
+            return res.json({
+                success: true,
+                configured: true,
+                connected: isConnected,
+                freshStatus,
+                telemetryFresh,
+                dataStatus,
+                statusMessage,
+                lastSeenAt: conn.lastSeenAt,
+                lastTelemetryAt: k8sSummary.updatedAt,
+                environment: conn.environment,
+                connectionName: conn.name,
+                cluster: {
+                    server: conn.name,
+                    context: conn.agentId,
+                    source: `Connected Agent (${conn.name})`,
+                    status: freshStatus,
+                    dataStatus,
+                    telemetryStatus: telemetryFresh ? "Fresh" : "Stale",
+                    statusMessage
+                },
+                counts: {
+                    nodes: k8sSummary.nodesCount || k8sSummary.nodes?.length || 0,
+                    pods: k8sSummary.podsCount || k8sSummary.pods?.length || 0,
+                    deployments: k8sSummary.deploymentsCount || k8sSummary.deployments?.length || 0,
+                    services: k8sSummary.servicesCount || k8sSummary.services?.length || 0
+                },
+                namespace: namespace || "cloudops",
+                nodes: k8sSummary.nodes || [],
+                pods: k8sSummary.pods || [],
+                deployments: k8sSummary.deployments || [],
+                services: k8sSummary.services || [],
+                recentActions
+            });
         }
 
-        // Default: local cluster
-        const overview = await kubernetesService.getOverview(namespace);
-        
-        let recentActions = [];
-        try {
-            recentActions = await RemediationAction.find({
-                $or: [
-                    { connection: null },
-                    { executor: "KubernetesExecutor" },
-                    { action: { $in: ["SCALE_SERVICE", "RESTART_SERVICE"] } }
-                ]
-            })
-            .sort({ createdAt: -1 })
-            .limit(15)
-            .populate("incident", "title severity status")
-            .populate("connection", "name environment agentId status");
-        } catch (dbErr) {
-            recentActions = [];
+        // Only if no connected agent exists, fallback to direct local kubeconfig if present
+        if (kubernetesService.checkConnection()) {
+            const overview = await kubernetesService.getOverview(namespace);
+            let recentActions = [];
+            if (mongoose.connection.readyState === 1) {
+                try {
+                    recentActions = await RemediationAction.find({
+                        $or: [
+                            { connection: null },
+                            { executor: "KubernetesExecutor" },
+                            { action: { $in: ["SCALE_SERVICE", "RESTART_SERVICE"] } }
+                        ]
+                    })
+                    .sort({ createdAt: -1 })
+                    .limit(15)
+                    .populate("incident", "title severity status")
+                    .populate("connection", "name environment agentId status");
+                } catch (dbErr) {
+                    recentActions = [];
+                }
+            }
+
+            return res.json({
+                success: true,
+                configured: overview.connected,
+                ...overview,
+                recentActions
+            });
         }
 
-        res.json({
+        // No agent connected and no local kubeconfig found (e.g. running on Render without agent)
+        return res.json({
             success: true,
-            configured: overview.connected,
-            ...overview,
-            recentActions
+            configured: false,
+            connected: false,
+            dataStatus: "DISCONNECTED",
+            statusMessage: "No connected infrastructure agent or local kubeconfig found.",
+            namespace: namespace || "cloudops",
+            counts: { nodes: 0, pods: 0, deployments: 0, services: 0 },
+            summary: { nodesReady: 0, nodesTotal: 0, podsRunning: 0, podsTotal: 0, deploymentsHealthy: 0, deploymentsTotal: 0, servicesTotal: 0 },
+            cluster: {
+                server: "Disconnected",
+                context: "None",
+                source: "Unconfigured",
+                status: "DISCONNECTED",
+                dataStatus: "DISCONNECTED",
+                statusMessage: "No cluster connected"
+            },
+            nodes: [],
+            pods: [],
+            deployments: [],
+            services: [],
+            recentActions: []
         });
     } catch (error) {
         console.error("Kubernetes overview error:", error.message);
@@ -103,24 +181,38 @@ exports.getKubernetesOverview = async (req, res) => {
 exports.getKubernetesStatus = async (req, res) => {
     try {
         const { connectionId } = req.query || {};
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
-            if (conn) {
-                return res.json({
-                    success: true,
-                    connected: conn.status === "CONNECTED",
-                    server: conn.name,
-                    context: conn.agentId,
-                    source: `Agent (${conn.name})`,
-                    status: conn.status
-                });
-            }
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
+            const freshStatus = computeFreshStatus(conn);
+            const telemetryFresh = isTelemetryFresh(conn.k8sSummary?.updatedAt);
+            const isK8sAvailable = freshStatus === "CONNECTED" && telemetryFresh && conn.k8sSummary?.clusterConnected !== false;
+            return res.json({
+                success: true,
+                connected: isK8sAvailable,
+                freshStatus,
+                telemetryFresh,
+                server: conn.name,
+                context: conn.agentId,
+                source: `Agent (${conn.name})`,
+                status: freshStatus
+            });
         }
 
-        const status = await kubernetesService.getClusterStatus();
-        res.json({
+        if (kubernetesService.checkConnection()) {
+            const status = await kubernetesService.getClusterStatus();
+            return res.json({
+                success: true,
+                ...status
+            });
+        }
+
+        return res.json({
             success: true,
-            ...status
+            connected: false,
+            mode: "unconfigured",
+            cluster: null,
+            namespace: "cloudops",
+            message: "No connected infrastructure agent or cluster configuration found."
         });
     } catch (error) {
         res.json({
@@ -137,22 +229,30 @@ exports.getKubernetesStatus = async (req, res) => {
 exports.getKubernetesHealth = async (req, res) => {
     try {
         const { connectionId } = req.query || {};
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
-            if (conn) {
-                return res.json({
-                    success: true,
-                    healthy: conn.status === "CONNECTED",
-                    status: conn.status,
-                    version: conn.version
-                });
-            }
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
+            const freshStatus = computeFreshStatus(conn);
+            return res.json({
+                success: true,
+                healthy: freshStatus === "CONNECTED",
+                status: freshStatus,
+                version: conn.version
+            });
         }
 
-        const health = await kubernetesService.getHealth();
-        res.json({
+        if (kubernetesService.checkConnection()) {
+            const health = await kubernetesService.getHealth();
+            return res.json({
+                success: true,
+                ...health
+            });
+        }
+
+        return res.json({
             success: true,
-            ...health
+            healthy: false,
+            status: "DISCONNECTED",
+            message: "No connected infrastructure agent or local cluster found."
         });
     } catch (error) {
         res.json({
@@ -169,8 +269,8 @@ exports.getKubernetesHealth = async (req, res) => {
 exports.getKubernetesNodes = async (req, res) => {
     try {
         const { connectionId } = req.query || {};
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
             const nodes = conn?.k8sSummary?.nodes || [];
             return res.json({
                 success: true,
@@ -179,11 +279,19 @@ exports.getKubernetesNodes = async (req, res) => {
             });
         }
 
-        const nodes = await kubernetesService.getNodes();
-        res.json({
+        if (kubernetesService.checkConnection()) {
+            const nodes = await kubernetesService.getNodes();
+            return res.json({
+                success: true,
+                nodesCount: nodes.length,
+                nodes
+            });
+        }
+
+        return res.json({
             success: true,
-            nodesCount: nodes.length,
-            nodes
+            nodesCount: 0,
+            nodes: []
         });
     } catch (error) {
         res.status(500).json({
@@ -200,10 +308,10 @@ exports.getKubernetesNodes = async (req, res) => {
 exports.getKubernetesPods = async (req, res) => {
     try {
         const { namespace, connectionId } = req.query || {};
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
             let pods = conn?.k8sSummary?.pods || [];
-            if (namespace) {
+            if (namespace && namespace !== "all") {
                 pods = pods.filter(p => p.namespace === namespace);
             }
             return res.json({
@@ -213,11 +321,19 @@ exports.getKubernetesPods = async (req, res) => {
             });
         }
 
-        const pods = await kubernetesService.getPods(namespace);
-        res.json({
+        if (kubernetesService.checkConnection()) {
+            const pods = await kubernetesService.getPods(namespace);
+            return res.json({
+                success: true,
+                podsCount: pods.length,
+                pods
+            });
+        }
+
+        return res.json({
             success: true,
-            podsCount: pods.length,
-            pods
+            podsCount: 0,
+            pods: []
         });
     } catch (error) {
         res.status(500).json({
@@ -234,10 +350,10 @@ exports.getKubernetesPods = async (req, res) => {
 exports.getKubernetesDeployments = async (req, res) => {
     try {
         const { namespace, connectionId } = req.query || {};
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
             let deployments = conn?.k8sSummary?.deployments || [];
-            if (namespace) {
+            if (namespace && namespace !== "all") {
                 deployments = deployments.filter(d => d.namespace === namespace);
             }
             return res.json({
@@ -247,11 +363,19 @@ exports.getKubernetesDeployments = async (req, res) => {
             });
         }
 
-        const deployments = await kubernetesService.getDeployments(namespace);
-        res.json({
+        if (kubernetesService.checkConnection()) {
+            const deployments = await kubernetesService.getDeployments(namespace);
+            return res.json({
+                success: true,
+                deploymentsCount: deployments.length,
+                deployments
+            });
+        }
+
+        return res.json({
             success: true,
-            deploymentsCount: deployments.length,
-            deployments
+            deploymentsCount: 0,
+            deployments: []
         });
     } catch (error) {
         res.status(500).json({
@@ -268,10 +392,10 @@ exports.getKubernetesDeployments = async (req, res) => {
 exports.getKubernetesServices = async (req, res) => {
     try {
         const { namespace, connectionId } = req.query || {};
-        if (connectionId && connectionId !== "local") {
-            const conn = await InfrastructureConnection.findById(connectionId);
+        const conn = await resolveConnection(connectionId);
+        if (conn) {
             let services = conn?.k8sSummary?.services || [];
-            if (namespace) {
+            if (namespace && namespace !== "all") {
                 services = services.filter(s => s.namespace === namespace);
             }
             return res.json({
@@ -281,11 +405,19 @@ exports.getKubernetesServices = async (req, res) => {
             });
         }
 
-        const services = await kubernetesService.getServices(namespace);
-        res.json({
+        if (kubernetesService.checkConnection()) {
+            const services = await kubernetesService.getServices(namespace);
+            return res.json({
+                success: true,
+                servicesCount: services.length,
+                services
+            });
+        }
+
+        return res.json({
             success: true,
-            servicesCount: services.length,
-            services
+            servicesCount: 0,
+            services: []
         });
     } catch (error) {
         res.status(500).json({

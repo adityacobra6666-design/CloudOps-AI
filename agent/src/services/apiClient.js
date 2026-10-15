@@ -1,4 +1,22 @@
 const axios = require("axios");
+const http = require("http");
+const https = require("https");
+
+const httpAgent = new http.Agent({
+    keepAlive: true,
+    maxSockets: 10,
+    maxFreeSockets: 5,
+    timeout: 30000,
+    keepAliveMsecs: 15000
+});
+
+const httpsAgent = new https.Agent({
+    keepAlive: true,
+    maxSockets: 10,
+    maxFreeSockets: 5,
+    timeout: 30000,
+    keepAliveMsecs: 15000
+});
 
 class ApiClient {
     constructor(config) {
@@ -10,7 +28,9 @@ class ApiClient {
 
         this.client = axios.create({
             baseURL: `${this.cloudopsUrl}/api`,
-            timeout: 15000
+            timeout: 15000,
+            httpAgent,
+            httpsAgent
         });
     }
 
@@ -25,6 +45,34 @@ class ApiClient {
             "x-agent-id": this.agentId,
             "Content-Type": "application/json"
         };
+    }
+
+    async executeWithRetry(fn, maxRetries = 2) {
+        let attempt = 0;
+        while (true) {
+            try {
+                return await fn();
+            } catch (error) {
+                const code = error.code || "";
+                const status = error.response?.status;
+                const isRetryable =
+                    code === "ECONNRESET" ||
+                    code === "ETIMEDOUT" ||
+                    code === "EAI_AGAIN" ||
+                    code === "ENETUNREACH" ||
+                    status === 502 ||
+                    status === 503 ||
+                    status === 504 ||
+                    error.message?.includes("socket disconnected");
+
+                if (isRetryable && attempt < maxRetries && !this.isRevoked) {
+                    attempt++;
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                    continue;
+                }
+                throw error;
+            }
+        }
     }
 
     // =========================================
@@ -67,16 +115,18 @@ class ApiClient {
         if (!this.agentToken || this.isRevoked) return null;
 
         try {
-            const response = await this.client.post(
-                "/agent/heartbeat",
-                {
-                    agentId: this.agentId,
-                    version: this.config.version,
-                    capabilities: ["METRICS", "KUBERNETES_READ", "KUBERNETES_REMEDIATION"],
-                    health: healthInfo.status || "healthy",
-                    metadata: healthInfo
-                },
-                { headers: this.getAuthHeaders() }
+            const response = await this.executeWithRetry(() =>
+                this.client.post(
+                    "/agent/heartbeat",
+                    {
+                        agentId: this.agentId,
+                        version: this.config.version,
+                        capabilities: ["METRICS", "KUBERNETES_READ", "KUBERNETES_REMEDIATION"],
+                        health: healthInfo.status || "healthy",
+                        metadata: healthInfo
+                    },
+                    { headers: this.getAuthHeaders() }
+                )
             );
 
             return response.data;
@@ -93,14 +143,16 @@ class ApiClient {
         if (!this.agentToken || this.isRevoked) return null;
 
         try {
-            const response = await this.client.post(
-                "/agent/telemetry",
-                {
-                    agentId: this.agentId,
-                    timestamp: new Date().toISOString(),
-                    ...payload
-                },
-                { headers: this.getAuthHeaders() }
+            const response = await this.executeWithRetry(() =>
+                this.client.post(
+                    "/agent/telemetry",
+                    {
+                        agentId: this.agentId,
+                        timestamp: new Date().toISOString(),
+                        ...payload
+                    },
+                    { headers: this.getAuthHeaders() }
+                )
             );
 
             return response.data;
@@ -117,9 +169,11 @@ class ApiClient {
         if (!this.agentToken || this.isRevoked) return null;
 
         try {
-            const response = await this.client.get(
-                "/agent/commands",
-                { headers: this.getAuthHeaders() }
+            const response = await this.executeWithRetry(() =>
+                this.client.get(
+                    "/agent/commands",
+                    { headers: this.getAuthHeaders() }
+                )
             );
 
             return response.data?.command || null;
@@ -136,13 +190,15 @@ class ApiClient {
         if (!this.agentToken || this.isRevoked) return null;
 
         try {
-            const response = await this.client.post(
-                "/agent/command-result",
-                {
-                    agentId: this.agentId,
-                    ...resultPayload
-                },
-                { headers: this.getAuthHeaders() }
+            const response = await this.executeWithRetry(() =>
+                this.client.post(
+                    "/agent/command-result",
+                    {
+                        agentId: this.agentId,
+                        ...resultPayload
+                    },
+                    { headers: this.getAuthHeaders() }
+                )
             );
 
             return response.data;
@@ -158,6 +214,20 @@ class ApiClient {
     handleApiError(operation, error) {
         const status = error.response?.status;
         const msg = String(error.response?.data?.message || error.message || "");
+	const requestId =
+    error.response?.headers?.["x-request-id"] ||
+    error.response?.headers?.["rndr-id"] ||
+    error.response?.headers?.["cf-ray"];
+
+if (status >= 500) {
+    console.error("[AGENT] Control-plane error details:", {
+        operation,
+        status,
+        code: error.code || null,
+        requestId: requestId || null,
+        response: error.response?.data ?? null
+    });
+}
 
         if (status === 401 || status === 403) {
             console.error(`🚫 [AGENT] ${operation} rejected (${status}): ${msg}`);

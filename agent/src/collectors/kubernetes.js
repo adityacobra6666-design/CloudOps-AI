@@ -52,9 +52,15 @@ class KubernetesCollector {
                 nodes: [],
                 pods: [],
                 deployments: [],
-                services: []
+                services: [],
+                clusterConnected: false,
+                k8sError: "Kubernetes client not initialized"
             };
         }
+
+        let clusterConnected = true;
+        let lastError = null;
+        let successfulQueries = 0;
 
         try {
             // 1. Nodes
@@ -73,8 +79,10 @@ class KubernetesCollector {
                         memory: node.status?.capacity?.memory || "N/A"
                     };
                 });
+                successfulQueries++;
             } catch (nodeErr) {
-                // If RBAC role is scoped to namespace only (least-privilege)
+                // If RBAC role is scoped to namespace only (least-privilege) or cluster is down
+                lastError = nodeErr.message;
                 console.log(`ℹ️ [AGENT K8S] Node read restricted or omitted: ${nodeErr.message}`);
             }
 
@@ -98,7 +106,10 @@ class KubernetesCollector {
                             createdAt: pod.metadata?.creationTimestamp
                         });
                     }
-                } catch (e) {}
+                    successfulQueries++;
+                } catch (e) {
+                    lastError = e.message;
+                }
             }
 
             // 3. Deployments
@@ -118,7 +129,10 @@ class KubernetesCollector {
                             image: dep.spec?.template?.spec?.containers?.[0]?.image || "unknown"
                         });
                     }
-                } catch (e) {}
+                    successfulQueries++;
+                } catch (e) {
+                    lastError = e.message;
+                }
             }
 
             // 4. Services
@@ -136,7 +150,15 @@ class KubernetesCollector {
                             ports: (svc.spec?.ports || []).map(p => `${p.port}/${p.protocol}`).join(", ")
                         });
                     }
-                } catch (e) {}
+                    successfulQueries++;
+                } catch (e) {
+                    lastError = e.message;
+                }
+            }
+
+            // If zero queries succeeded and an error occurred, cluster is unreachable
+            if (successfulQueries === 0 && lastError) {
+                clusterConnected = false;
             }
 
             return {
@@ -147,7 +169,9 @@ class KubernetesCollector {
                 nodes: nodesList,
                 pods: podsList,
                 deployments: deploymentsList,
-                services: servicesList
+                services: servicesList,
+                clusterConnected,
+                k8sError: clusterConnected ? null : (lastError || "Kubernetes cluster query failed")
             };
         } catch (error) {
             console.error(`❌ [AGENT K8S] Error collecting cluster data: ${error.message}`);
@@ -159,7 +183,9 @@ class KubernetesCollector {
                 nodes: [],
                 pods: [],
                 deployments: [],
-                services: []
+                services: [],
+                clusterConnected: false,
+                k8sError: error.message
             };
         }
     }

@@ -106,17 +106,26 @@ async function startAgent() {
     console.log("[AGENT] Command polling enabled with agent-side validation.");
 
     // Send initial telemetry immediately
-    try {
-        const initialMetrics = await promCollector.collectMetrics();
-        const initialK8s = await k8sCollector.collectClusterData(config.allowedNamespaces);
-        await apiClient.sendTelemetry({
-            metrics: initialMetrics,
-            k8s: initialK8s
-        });
-        console.log("✅ [AGENT] Initial telemetry delivered successfully.");
-    } catch (e) {
-        console.warn(`⚠️ [AGENT] Initial telemetry push notice: ${e.message}`);
+    // Send initial telemetry immediately
+try {
+    const initialMetrics = await promCollector.collectMetrics();
+    const initialK8s = await k8sCollector.collectClusterData(config.allowedNamespaces);
+
+    const telemetryResult = await apiClient.sendTelemetry({
+        metrics: initialMetrics,
+        k8s: initialK8s
+    });
+
+    if (telemetryResult?.success && telemetryResult?.recorded) {
+        console.log("✅ [AGENT] Initial telemetry recorded by control plane.");
+    } else {
+        console.warn(
+            "⚠️ [AGENT] Initial telemetry was NOT confirmed by control plane."
+        );
     }
+} catch (e) {
+    console.warn(`⚠️ [AGENT] Initial telemetry push notice: ${e.message}`);
+}
 
     console.log("🟢 [AGENT] CloudOps Agent running actively. Outbound-only HTTPS connection active.");
 

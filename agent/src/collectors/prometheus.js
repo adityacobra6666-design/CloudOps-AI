@@ -20,6 +20,23 @@ class PrometheusCollector {
         };
     }
 
+    async checkHealth() {
+        try {
+            const response = await this.client.get("/-/healthy", { timeout: 2000 });
+            return response.status === 200;
+        } catch (e) {
+            try {
+                const res = await this.client.get("/api/v1/query", {
+                    params: { query: "1" },
+                    timeout: 2000
+                });
+                return res.data?.status === "success";
+            } catch (err) {
+                return false;
+            }
+        }
+    }
+
     async queryMetric(queryExpr) {
         try {
             const response = await this.client.get("/api/v1/query", {
@@ -42,6 +59,21 @@ class PrometheusCollector {
 
     async collectMetrics() {
         try {
+            const isHealthy = await this.checkHealth();
+            if (!isHealthy) {
+                return {
+                    prometheusConnected: false,
+                    prometheusError: `Prometheus server is unreachable at ${this.prometheusUrl}`,
+                    cpu: 0,
+                    memory: 0,
+                    requestRate: 0,
+                    errorRate: 0,
+                    p95Latency: 0,
+                    networkRx: 0,
+                    networkTx: 0
+                };
+            }
+
             const [
                 cpu, memory, requestRate, errorRate, p95Latency, networkRx, networkTx
             ] = await Promise.all([
@@ -55,6 +87,7 @@ class PrometheusCollector {
             ]);
 
             return {
+                prometheusConnected: true,
                 cpu: parseFloat(cpu.toFixed(1)),
                 memory: parseFloat(memory.toFixed(1)),
                 requestRate: parseFloat(requestRate.toFixed(2)),
@@ -66,6 +99,8 @@ class PrometheusCollector {
         } catch (err) {
             console.warn(`[PROMETHEUS COLLECTOR] Collection notice: ${err.message}`);
             return {
+                prometheusConnected: false,
+                prometheusError: err.message,
                 cpu: 0,
                 memory: 0,
                 requestRate: 0,

@@ -28,17 +28,28 @@ export default function ObservabilityPage() {
     const abortControllerRef = useRef(null);
     const isFetchingRef = useRef(false);
 
-    // Load available connections
+    // Load available connections and select connected agent
     useEffect(() => {
+        let isMounted = true;
         const loadConnections = async () => {
             try {
                 const res = await getInfrastructureConnections();
-                if (res.success) {
-                    setAvailableConnections(res.connections || []);
+                if (res.success && isMounted) {
+                    const connections = res.connections || [];
+                    setAvailableConnections(connections);
+                    const connected = connections.find(c => c.status === "CONNECTED");
+                    if (connected) {
+                        setSelectedEnvironment(current => (current === "local" || !connections.some(c => c._id === current)) ? connected._id : current);
+                    } else if (connections.length > 0) {
+                        setSelectedEnvironment(current => (current === "local" || !connections.some(c => c._id === current)) ? connections[0]._id : current);
+                    }
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.warn("Failed to load connections:", e?.message);
+            }
         };
         loadConnections();
+        return () => { isMounted = false; };
     }, []);
 
     const fetchTelemetryData = async (selectedRange, showGlobalLoading = false, connId = selectedEnvironment) => {
@@ -81,7 +92,7 @@ export default function ObservabilityPage() {
     // Auto-refresh timer every 20 seconds (preventing overlapping requests)
     useEffect(() => {
         const intervalId = setInterval(() => {
-            fetchTelemetryData(range, false);
+            fetchTelemetryData(range, false, selectedEnvironment);
         }, 20000);
 
         return () => {
@@ -90,7 +101,7 @@ export default function ObservabilityPage() {
                 abortControllerRef.current.abort();
             }
         };
-    }, [range]);
+    }, [range, selectedEnvironment]);
 
     const handleRangeChange = (newRange) => {
         if (newRange !== range) {
@@ -178,6 +189,31 @@ export default function ObservabilityPage() {
                         }}>
                             {telemetry?.providerLabel || (telemetry?.provider === "grafana_cloud" ? "☁️ Grafana Cloud Prometheus" : "💻 Local Prometheus")}
                         </span>
+                        {telemetry?.dataStatus && (
+                            <span style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                padding: "3px 10px",
+                                borderRadius: "6px",
+                                fontWeight: "600",
+                                backgroundColor: telemetry.dataStatus === "CONNECTED"
+                                    ? "rgba(34, 197, 94, 0.15)"
+                                    : telemetry.dataStatus === "STALE"
+                                        ? "rgba(245, 158, 11, 0.15)"
+                                        : "rgba(239, 68, 68, 0.15)",
+                                color: telemetry.dataStatus === "CONNECTED"
+                                    ? "#16A34A"
+                                    : telemetry.dataStatus === "STALE"
+                                        ? "#D97706"
+                                        : "#DC2626",
+                                border: `1px solid ${telemetry.dataStatus === "CONNECTED" ? "rgba(34, 197, 94, 0.3)" : telemetry.dataStatus === "STALE" ? "rgba(245, 158, 11, 0.3)" : "rgba(239, 68, 68, 0.3)"}`
+                            }}>
+                                {telemetry.dataStatus === "CONNECTED" && "● Connected and data fresh"}
+                                {telemetry.dataStatus === "STALE" && "⚠️ Connected but telemetry stale"}
+                                {telemetry.dataStatus === "PROMETHEUS_UNAVAILABLE" && "❌ Prometheus unavailable"}
+                                {telemetry.dataStatus === "DISCONNECTED" && "○ Disconnected"}
+                            </span>
+                        )}
                         {telemetry?.timestamp && (
                             <span style={{ color: isDark ? "#94A3B8" : "#64748B" }}>
                                 Last updated: <strong>{new Date(telemetry.timestamp).toLocaleTimeString()}</strong>
@@ -195,12 +231,13 @@ export default function ObservabilityPage() {
                         title="Select Infrastructure Environment"
                         aria-label="Select Infrastructure Environment"
                     >
-                        <option value="local">💻 Local (Docker / Minikube)</option>
                         {availableConnections.map((c) => (
                             <option key={c._id} value={c._id}>
                                 🌐 {c.name} ({c.status})
                             </option>
                         ))}
+                        <option value="local">💻 Local Cluster (Default Connected Agent)</option>
+                        <option value="grafana_cloud">☁️ Direct Grafana Cloud</option>
                     </select>
 
                     {/* TIME RANGE SELECTOR */}
@@ -265,6 +302,42 @@ export default function ObservabilityPage() {
                         }}>
                             <span style={{ fontSize: "1.1rem" }}>⚠️</span>
                             <span><strong>Metrics Notice:</strong> {telemetry.providerError}</span>
+                        </div>
+                    )}
+
+                    {telemetry?.dataStatus === "STALE" && (
+                        <div style={{
+                            marginBottom: "1.25rem",
+                            padding: "0.75rem 1rem",
+                            borderRadius: "8px",
+                            backgroundColor: "rgba(245, 158, 11, 0.12)",
+                            border: "1px solid rgba(245, 158, 11, 0.35)",
+                            color: "#D97706",
+                            fontSize: "0.875rem",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px"
+                        }}>
+                            <span style={{ fontSize: "1.1rem" }}>⚠️</span>
+                            <span><strong>Connected but telemetry stale:</strong> No telemetry received from agent in the last 60 seconds. Existing readings may not reflect current state.</span>
+                        </div>
+                    )}
+
+                    {telemetry?.dataStatus === "PROMETHEUS_UNAVAILABLE" && (
+                        <div style={{
+                            marginBottom: "1.25rem",
+                            padding: "0.75rem 1rem",
+                            borderRadius: "8px",
+                            backgroundColor: "rgba(239, 68, 68, 0.12)",
+                            border: "1px solid rgba(239, 68, 68, 0.35)",
+                            color: "#DC2626",
+                            fontSize: "0.875rem",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px"
+                        }}>
+                            <span style={{ fontSize: "1.1rem" }}>❌</span>
+                            <span><strong>Prometheus Unavailable:</strong> The remote agent cannot reach Prometheus at the configured URL or metrics could not be gathered.</span>
                         </div>
                     )}
 

@@ -97,6 +97,8 @@ const infrastructureConnectionSchema = new mongoose.Schema(
             pods: { type: [mongoose.Schema.Types.Mixed], default: [] },
             deployments: { type: [mongoose.Schema.Types.Mixed], default: [] },
             services: { type: [mongoose.Schema.Types.Mixed], default: [] },
+            clusterConnected: { type: Boolean, default: true },
+            k8sError: { type: String, default: null },
             updatedAt: { type: Date, default: null }
         },
         enabled: {

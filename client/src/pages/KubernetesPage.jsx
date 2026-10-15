@@ -64,7 +64,7 @@ export default function KubernetesPage() {
         try {
             if (showLoading) setLoading(true);
             setErrorMsg(null);
-            const queryConnId = (connId && connId !== "local") ? connId : undefined;
+            const queryConnId = connId || selectedEnvironment || "local";
             const data = await getKubernetesOverview(undefined, queryConnId);
             setK8sData(data);
         } catch (err) {
@@ -77,7 +77,7 @@ export default function KubernetesPage() {
 
     useEffect(() => {
         let isMounted = true;
-        const queryConnId = (selectedEnvironment && selectedEnvironment !== "local") ? selectedEnvironment : undefined;
+        const queryConnId = selectedEnvironment || "local";
         getKubernetesOverview(undefined, queryConnId)
             .then(data => {
                 if (isMounted) {
@@ -252,6 +252,18 @@ export default function KubernetesPage() {
                 </div>
             )}
 
+            {k8sData?.dataStatus === "STALE" && (
+                <div className="alert-banner warning" style={{ backgroundColor: "rgba(245, 158, 11, 0.15)", border: "1px solid rgba(245, 158, 11, 0.4)", color: "#D97706", marginBottom: "1rem", padding: "0.75rem 1rem", borderRadius: "8px", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>⚠️ <strong>Connected but telemetry stale:</strong> {k8sData.statusMessage || "The remote agent heartbeat is older than 60 seconds. Displayed resource counts may be outdated."}</span>
+                </div>
+            )}
+
+            {k8sData?.dataStatus === "KUBERNETES_ERROR" && (
+                <div className="alert-banner error" style={{ backgroundColor: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#DC2626", marginBottom: "1rem", padding: "0.75rem 1rem", borderRadius: "8px", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>❌ <strong>Kubernetes query failed:</strong> {k8sData.statusMessage || "The remote agent cannot reach the Kubernetes cluster API."}</span>
+                </div>
+            )}
+
             {loading && !k8sData ? (
                 <div className="empty-state">Connecting to Kubernetes API...</div>
             ) : !k8sData?.connected ? (
@@ -300,7 +312,17 @@ export default function KubernetesPage() {
                             <div className="tile-value-row">
                                 <span className="tile-value" style={{ fontSize: "1.1rem" }}>{typeof k8sData.cluster === "string" ? k8sData.cluster : (k8sData.cluster?.server || k8sData.cluster?.context || k8sData.cluster?.source || "Connected cluster")}</span>
                             </div>
-                            <span className="tile-status healthy">● Connected</span>
+                            {k8sData.dataStatus === "CONNECTED" ? (
+                                <span className="tile-status healthy">● Connected and data fresh</span>
+                            ) : k8sData.dataStatus === "STALE" ? (
+                                <span className="tile-status warning" style={{ color: "var(--color-warning, #D97706)" }}>⚠️ Connected but telemetry stale</span>
+                            ) : k8sData.dataStatus === "KUBERNETES_ERROR" ? (
+                                <span className="tile-status danger" style={{ color: "var(--color-danger, #DC2626)" }}>❌ Kubernetes query failed</span>
+                            ) : k8sData.dataStatus === "NO_RESOURCES" ? (
+                                <span className="tile-status info" style={{ color: "var(--color-info, #2563EB)" }}>ℹ️ No resources genuinely found</span>
+                            ) : (
+                                <span className={`tile-status ${k8sData.connected ? "healthy" : "danger"}`}>{k8sData.statusMessage || (k8sData.connected ? "● Connected" : "○ Disconnected")}</span>
+                            )}
                         </div>
                         <div className="metric-tile">
                             <span className="tile-label">Nodes</span>
@@ -368,7 +390,13 @@ export default function KubernetesPage() {
                                             ))
                                         ) : (
                                             <tr>
-                                                <td colSpan="6" className="text-muted text-center">No nodes reported.</td>
+                                                <td colSpan="6" className="text-muted text-center">
+                                                    {k8sData.dataStatus === "KUBERNETES_ERROR"
+                                                        ? `Kubernetes query failed: ${k8sData.statusMessage || "Cluster unreachable"}`
+                                                        : k8sData.dataStatus === "STALE"
+                                                            ? "Agent telemetry stale: No recent node updates received."
+                                                            : "No nodes reported."}
+                                                </td>
                                             </tr>
                                         )}
                                     </tbody>
@@ -458,7 +486,13 @@ export default function KubernetesPage() {
                                             ))
                                         ) : (
                                             <tr>
-                                                <td colSpan="6" className="text-muted text-center">No deployments found in namespace <code>{k8sData.namespace || "cloudops"}</code>.</td>
+                                                <td colSpan="6" className="text-muted text-center">
+                                                    {k8sData.dataStatus === "KUBERNETES_ERROR"
+                                                        ? `Kubernetes query failed: ${k8sData.statusMessage || "Cluster unreachable"}`
+                                                        : k8sData.dataStatus === "STALE"
+                                                            ? "Agent telemetry stale: No recent deployment updates received."
+                                                            : `No deployments found in namespace ${k8sData.namespace || "cloudops"}.`}
+                                                </td>
                                             </tr>
                                         )}
                                     </tbody>
@@ -503,7 +537,13 @@ export default function KubernetesPage() {
                                             ))
                                         ) : (
                                             <tr>
-                                                <td colSpan="7" className="text-muted text-center">No active pods in namespace.</td>
+                                                <td colSpan="7" className="text-muted text-center">
+                                                    {k8sData.dataStatus === "KUBERNETES_ERROR"
+                                                        ? `Kubernetes query failed: ${k8sData.statusMessage || "Cluster unreachable"}`
+                                                        : k8sData.dataStatus === "STALE"
+                                                            ? "Agent telemetry stale: No recent pod updates received."
+                                                            : `No active pods in namespace ${k8sData.namespace || "cloudops"}.`}
+                                                </td>
                                             </tr>
                                         )}
                                     </tbody>

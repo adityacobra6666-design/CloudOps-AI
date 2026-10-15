@@ -158,10 +158,13 @@ exports.telemetry = async (req, res) => {
                     errorRate: parseFloat(metrics.errorRate) || 0,
                     p95Latency: parseFloat(metrics.p95Latency) || 0,
                     networkRx: parseFloat(metrics.networkRx) || 0,
-                    networkTx: parseFloat(metrics.networkTx) || 0
+                    networkTx: parseFloat(metrics.networkTx) || 0,
+                    prometheusConnected: metrics.prometheusConnected !== false,
+                    prometheusError: metrics.prometheusError || null
                 },
                 recordedAt: new Date()
             };
+            connection.markModified("telemetry");
         }
 
         if (k8s && typeof k8s === "object") {
@@ -174,8 +177,11 @@ exports.telemetry = async (req, res) => {
                 pods: Array.isArray(k8s.pods) ? k8s.pods : [],
                 deployments: Array.isArray(k8s.deployments) ? k8s.deployments : [],
                 services: Array.isArray(k8s.services) ? k8s.services : [],
+                clusterConnected: k8s.clusterConnected !== false,
+                k8sError: k8s.k8sError || null,
                 updatedAt: new Date()
             };
+            connection.markModified("k8sSummary");
         }
 
         await connection.save();

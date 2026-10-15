@@ -1,12 +1,15 @@
 const crypto = require("crypto");
+const mongoose = require("mongoose");
 const InfrastructureConnection = require("../models/infrastructureConnection.model");
 const AgentCommand = require("../models/agentCommand.model");
 
-// Heartbeat staleness thresholds
+// Heartbeat & Telemetry staleness thresholds
 const HEARTBEAT_TIMEOUT_MS = 60 * 1000; // 60 seconds -> DISCONNECTED
 const HEARTBEAT_DEGRADED_MS = 35 * 1000; // 35 seconds -> DEGRADED
+const TELEMETRY_STALE_MS = 60 * 1000; // 60 seconds -> Stale Telemetry
 
 function computeFreshStatus(connection) {
+    if (!connection) return "DISCONNECTED";
     if (connection.status === "REVOKED") return "REVOKED";
     if (connection.status === "PENDING") return "PENDING";
 
@@ -23,6 +26,71 @@ function computeFreshStatus(connection) {
     }
     return "CONNECTED";
 }
+
+function isTelemetryFresh(timestamp, maxAgeMs = TELEMETRY_STALE_MS) {
+    if (!timestamp) return false;
+    const elapsed = Date.now() - new Date(timestamp).getTime();
+    return elapsed <= maxAgeMs;
+}
+
+/**
+ * Resolve active InfrastructureConnection
+ * If connectionId is specified, finds by ID or name/agentId.
+ * If connectionId is "local" or omitted, finds the active connected agent
+ * representing the local cluster (the agent is the source of truth).
+ */
+async function resolveConnection(connectionId) {
+    if (connectionId === "grafana_cloud") {
+        return null;
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+        return null;
+    }
+
+    if (connectionId && mongoose.Types.ObjectId.isValid(connectionId)) {
+        const conn = await InfrastructureConnection.findById(connectionId);
+        if (conn) return conn;
+    }
+    if (connectionId && connectionId !== "local" && connectionId !== "grafana_cloud") {
+        const conn = await InfrastructureConnection.findOne({
+            $or: [{ agentId: connectionId }, { name: connectionId }]
+        });
+        if (conn) return conn;
+    }
+
+    if (connectionId === "grafana_cloud") {
+        return null;
+    }
+
+    // connectionId is "local" or undefined: find connected agent
+    const connected = await InfrastructureConnection.findOne({
+        status: "CONNECTED",
+        enabled: { $ne: false }
+    }).sort({ lastSeenAt: -1 });
+    if (connected) return connected;
+
+    // Fallback: any agent with recorded telemetry or k8sSummary
+    const anyWithTelemetry = await InfrastructureConnection.findOne({
+        $or: [
+            { "telemetry.recordedAt": { $ne: null } },
+            { "k8sSummary.updatedAt": { $ne: null } }
+        ],
+        enabled: { $ne: false }
+    }).sort({ lastSeenAt: -1, updatedAt: -1 });
+    if (anyWithTelemetry) return anyWithTelemetry;
+
+    // Fallback: any registered agent
+    return await InfrastructureConnection.findOne({
+        enabled: { $ne: false }
+    }).sort({ createdAt: -1 });
+}
+
+exports.computeFreshStatus = computeFreshStatus;
+exports.isTelemetryFresh = isTelemetryFresh;
+exports.resolveConnection = resolveConnection;
+exports.HEARTBEAT_TIMEOUT_MS = HEARTBEAT_TIMEOUT_MS;
+exports.TELEMETRY_STALE_MS = TELEMETRY_STALE_MS;
 
 // =========================================
 // CREATE INFRASTRUCTURE CONNECTION
