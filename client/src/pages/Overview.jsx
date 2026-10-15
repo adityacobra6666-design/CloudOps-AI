@@ -7,7 +7,7 @@ import Header from "../components/Header";
 
 export default function Overview() {
     const { metrics, loading: metricsLoading, error: metricsError, lastUpdated, refetch: refetchMetrics } = useMetrics(5000);
-    const { services, globalStatus, refetch: refetchHealth } = useSystemHealth(5000);
+    const { services = [], globalStatus, loading: healthLoading, error: healthError, refetch: refetchHealth } = useSystemHealth(5000);
 
     const [incidents, setIncidents] = useState([]);
     const [remediations, setRemediations] = useState([]);
@@ -171,17 +171,33 @@ export default function Overview() {
                         <span className="card-tag">Real-Time Pings</span>
                     </div>
                     <div className="services-list">
-                        {services.map((svc) => (
-                            <div key={svc.name} className="service-row">
-                                <div className="svc-info">
-                                    <span className={`status-dot-sm ${svc.status.toLowerCase()}`} />
-                                    <span className="svc-name">{svc.name}</span>
-                                </div>
-                                <span className={`svc-badge ${svc.status.toLowerCase()}`}>
-                                    {svc.status}
-                                </span>
-                            </div>
-                        ))}
+                        {healthLoading ? (
+                            <div className="empty-state" style={{ padding: "24px 0" }}>Loading service health...</div>
+                        ) : healthError ? (
+                            <div className="empty-state error" style={{ padding: "24px 0" }}>⚠️ {healthError}</div>
+                        ) : services.length === 0 ? (
+                            <div className="empty-state" style={{ padding: "24px 0" }}>No services reported.</div>
+                        ) : (
+                            services.map((svc) => {
+                                const statusKey = (svc.status || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+                                return (
+                                    <div key={svc.name} className="service-row" title={svc.details || undefined}>
+                                        <div className="svc-info">
+                                            <span className={`status-dot-sm ${statusKey}`} />
+                                            <div className="svc-text-group">
+                                                <span className="svc-name">{svc.name}</span>
+                                                {svc.details && (
+                                                    <span className="svc-details-text">{svc.details}</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <span className={`svc-badge ${statusKey}`}>
+                                            {svc.status}
+                                        </span>
+                                    </div>
+                                );
+                            })
+                        )}
                     </div>
                 </div>
 

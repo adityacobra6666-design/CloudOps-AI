@@ -333,10 +333,102 @@ async function checkPrometheusHealth() {
     }
 }
 
+/**
+ * Specifically checks Grafana Cloud Prometheus metrics integration
+ */
+async function checkGrafanaCloudHealth() {
+    const cloudUrl = process.env.GRAFANA_CLOUD_PROMETHEUS_URL;
+    const cloudUser = process.env.GRAFANA_CLOUD_PROMETHEUS_USERNAME;
+    const cloudToken = process.env.GRAFANA_CLOUD_PROMETHEUS_TOKEN;
+
+    if (!cloudUrl || !cloudUrl.trim()) {
+        return {
+            configured: false,
+            healthy: false,
+            details: "Grafana Cloud credentials not configured"
+        };
+    }
+
+    if (!cloudUser || !cloudToken) {
+        return {
+            configured: false,
+            healthy: false,
+            details: "Missing Grafana Cloud username or API token"
+        };
+    }
+
+    const config = {
+        baseUrl: normalizeBaseUrl(cloudUrl),
+        timeout: 4000,
+        auth: {
+            username: String(cloudUser).trim(),
+            password: String(cloudToken).trim()
+        }
+    };
+
+    try {
+        const url = `${config.baseUrl}/api/v1/query`;
+        const reqConfig = createRequestConfig(config, { query: "1" });
+        reqConfig.timeout = 3000;
+        const response = await axios.get(url, reqConfig);
+        const isOk = response.data && response.data.status === "success";
+        return {
+            configured: true,
+            healthy: Boolean(isOk),
+            details: isOk ? "Ingestion and query active" : "Grafana Cloud query returned non-success"
+        };
+    } catch (error) {
+        const sanitized = sanitizeError(error, "Grafana Cloud health check");
+        return {
+            configured: true,
+            healthy: false,
+            details: sanitized.message
+        };
+    }
+}
+
+/**
+ * Specifically checks local Prometheus metrics integration
+ */
+async function checkLocalPrometheusHealth(isRenderOrProd) {
+    const localUrl = process.env.PROMETHEUS_URL || "http://prometheus:9090";
+    const isLocalhost = /localhost|127\.0\.0\.1|prometheus:9090/.test(localUrl);
+
+    if (isRenderOrProd && isLocalhost) {
+        return {
+            configured: false,
+            healthy: false,
+            isLocalhost: true,
+            details: "Localhost service — not accessible from cloud host"
+        };
+    }
+
+    try {
+        const normalized = normalizeBaseUrl(localUrl);
+        const res = await axios.get(`${normalized}/-/healthy`, { timeout: 1500 });
+        const ok = res.status >= 200 && res.status < 300;
+        return {
+            configured: true,
+            healthy: ok,
+            isLocalhost,
+            details: ok ? "Local Prometheus online" : "Unhealthy response from Prometheus"
+        };
+    } catch (err) {
+        return {
+            configured: !isLocalhost,
+            healthy: false,
+            isLocalhost,
+            details: `Unreachable at ${localUrl}`
+        };
+    }
+}
+
 module.exports = {
     PROMETHEUS_URL,
     queryInstant,
     queryRange,
     checkPrometheusHealth,
+    checkGrafanaCloudHealth,
+    checkLocalPrometheusHealth,
     getPrometheusConfig
 };

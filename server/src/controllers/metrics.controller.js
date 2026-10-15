@@ -81,51 +81,220 @@ exports.getOverviewMetrics = async (req, res) => {
     }
 };
 
-const { checkPrometheusHealth, getPrometheusConfig } = require("../services/prometheus.service");
+const {
+    checkPrometheusHealth,
+    checkGrafanaCloudHealth,
+    checkLocalPrometheusHealth,
+    getPrometheusConfig
+} = require("../services/prometheus.service");
+const geminiService = require("../services/ai/gemini.service");
+const incidentController = require("./incidentController");
+const Incident = require("../models/Incident");
+const InfrastructureConnection = require("../models/infrastructureConnection.model");
 
 // =========================================
 // GET SERVICE HEALTH
 // =========================================
 exports.getServicesHealth = async (req, res) => {
     const isRenderOrProd = Boolean(process.env.RENDER || process.env.NODE_ENV === "production");
-    const config = getPrometheusConfig();
+
+    // 1. Backend API (Self)
+    const backendSvc = {
+        name: "Backend",
+        status: "Healthy",
+        details: "Express API online"
+    };
+
+    // 2. MongoDB Database
+    const isMongoHealthy = mongoose.connection.readyState === 1;
+    const mongoSvc = {
+        name: "MongoDB",
+        status: isMongoHealthy ? "Healthy" : "Critical",
+        details: isMongoHealthy ? "Database connected" : "Database disconnected"
+    };
+
+    // 3. Gemini API (Never exposes API key)
+    let geminiStatus = "Not Configured";
+    let geminiDetails = "GEMINI_API_KEY is not configured";
+    try {
+        const gh = await geminiService.checkGeminiHealth();
+        if (gh.configured) {
+            geminiStatus = gh.healthy ? (gh.isMock ? "Healthy (Mock)" : "Healthy") : "Unavailable";
+            geminiDetails = gh.healthy ? (gh.isMock ? "Mock Mode" : (gh.model || "Connected")) : (gh.details || "API connection failed");
+        }
+    } catch (err) {
+        geminiStatus = "Unavailable";
+        geminiDetails = err.message ? err.message.substring(0, 100) : "Failed to query Gemini API";
+    }
+    const geminiSvc = {
+        name: "Gemini API",
+        status: geminiStatus,
+        details: geminiDetails
+    };
+
+    // 4. Grafana Cloud Metrics (Checked separately from local Prometheus)
+    let cloudPromStatus = "Not Configured";
+    let cloudPromDetails = "Grafana Cloud credentials not configured";
+    try {
+        const cloudHealth = await checkGrafanaCloudHealth();
+        if (cloudHealth.configured) {
+            cloudPromStatus = cloudHealth.healthy ? "Healthy" : "Unavailable";
+            cloudPromDetails = cloudHealth.details;
+        }
+    } catch (err) {
+        cloudPromStatus = "Unavailable";
+        cloudPromDetails = err.message ? err.message.substring(0, 100) : "Grafana Cloud check failed";
+    }
+    const grafanaCloudMetricsSvc = {
+        name: "Grafana Cloud Metrics",
+        status: cloudPromStatus,
+        details: cloudPromDetails
+    };
+
+    // 5. Local Prometheus
+    let localPromStatus = "Not Configured";
+    let localPromDetails = "Local Prometheus not configured";
+    try {
+        let agentPromHealthy = false;
+        let agentName = null;
+        if (isRenderOrProd) {
+            try {
+                const activeAgent = await InfrastructureConnection.findOne({ status: "CONNECTED" }).lean();
+                if (activeAgent && activeAgent.telemetry?.metrics?.prometheusError === null) {
+                    agentPromHealthy = true;
+                    agentName = activeAgent.name;
+                }
+            } catch (_) {}
+        }
+
+        if (agentPromHealthy) {
+            localPromStatus = "Healthy";
+            localPromDetails = `Connected via CloudOps Agent (${agentName})`;
+        } else {
+            const localHealth = await checkLocalPrometheusHealth(isRenderOrProd);
+            if (localHealth.configured) {
+                localPromStatus = localHealth.healthy ? "Healthy" : "Unavailable";
+                localPromDetails = localHealth.details;
+            } else {
+                localPromStatus = "Not Configured";
+                localPromDetails = localHealth.details;
+            }
+        }
+    } catch (err) {
+        localPromStatus = "Unavailable";
+        localPromDetails = err.message ? err.message.substring(0, 100) : "Local Prometheus check failed";
+    }
+    const localPromSvc = {
+        name: "Local Prometheus",
+        status: localPromStatus,
+        details: localPromDetails
+    };
+
+    // 6. Alerting Architecture: Grafana Cloud Managed Alerting vs Standalone Alertmanager
+    const isCloudConfigured = Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL);
+    const isGrafanaCloudAlerting = process.env.ALERTING_PROVIDER === "grafana_cloud" ||
+        (isCloudConfigured && process.env.ALERTING_PROVIDER !== "alertmanager");
+
+    const webhookSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
+
+    let alertingService = null;
+    if (isGrafanaCloudAlerting) {
+        const serviceName = "Grafana Cloud Managed Alerting";
+        if (!webhookSecret) {
+            alertingService = {
+                name: serviceName,
+                status: "Not Configured",
+                details: "Webhook secret not configured"
+            };
+        } else {
+            // Do not mark healthy merely because env var exists. Check actual alert traffic.
+            let hasAlert = Boolean(incidentController.getLastAlertWebhookTime ? incidentController.getLastAlertWebhookTime() : null);
+            if (!hasAlert) {
+                try {
+                    const count = await Incident.countDocuments({
+                        source: { $in: ["Prometheus Alertmanager", "Grafana", "Grafana Cloud"] }
+                    });
+                    hasAlert = count > 0;
+                } catch (_) {}
+            }
+
+            alertingService = {
+                name: serviceName,
+                status: hasAlert ? "Healthy" : "Degraded",
+                details: hasAlert ? "Webhook connected and receiving alerts" : "Webhook listener active; awaiting first alert delivery"
+            };
+        }
+    } else {
+        const serviceName = "Alertmanager";
+        const alertmanagerUrl = process.env.ALERTMANAGER_URL || "http://alertmanager:9093";
+        const isLocalhost = /localhost|127\.0\.0\.1|alertmanager:9093/.test(alertmanagerUrl);
+
+        if (isRenderOrProd && isLocalhost) {
+            alertingService = {
+                name: serviceName,
+                status: "Not Configured",
+                details: "Localhost service — not reachable on cloud host"
+            };
+        } else {
+            let amHealthy = false;
+            try {
+                const res = await axios.get(`${alertmanagerUrl}/-/healthy`, { timeout: 1500 });
+                amHealthy = res.status >= 200 && res.status < 300;
+            } catch (_) {}
+
+            alertingService = {
+                name: serviceName,
+                status: amHealthy ? "Healthy" : (isLocalhost ? "Not Configured" : "Unavailable"),
+                details: amHealthy ? "Reachable" : `Unreachable at ${alertmanagerUrl}`
+            };
+        }
+    }
+
+    // 7. Grafana Dashboards
+    const grafanaUrl = process.env.GRAFANA_URL || "http://grafana:3000";
+    const isLocalhostGrafana = /localhost|127\.0\.0\.1|grafana:3000/.test(grafanaUrl);
+    let grafanaStatus = "Not Configured";
+    let grafanaDetails = "Localhost dashboard — not reachable on cloud host";
+
+    if (!isRenderOrProd || !isLocalhostGrafana) {
+        try {
+            const res = await axios.get(`${grafanaUrl}/api/health`, { timeout: 1500 });
+            const ok = res.status >= 200 && res.status < 300;
+            grafanaStatus = ok ? "Healthy" : "Unavailable";
+            grafanaDetails = ok ? "Dashboard online" : "Unhealthy response";
+        } catch (_) {
+            grafanaStatus = isLocalhostGrafana ? "Not Configured" : "Unavailable";
+            grafanaDetails = `Unreachable at ${grafanaUrl}`;
+        }
+    }
+    const grafanaSvc = {
+        name: "Grafana",
+        status: grafanaStatus,
+        details: grafanaDetails
+    };
 
     const services = [
-        { name: "Backend", status: "Healthy" },
-        { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Healthy" : "Critical" },
-        { name: config.isCloud ? "Grafana Cloud Prometheus" : "Prometheus", status: "Unknown", provider: config.provider },
-        { name: "Grafana", status: isRenderOrProd ? "Unavailable" : "Degraded", url: GRAFANA_URL },
-        { name: "Alertmanager", status: isRenderOrProd ? "Unavailable" : "Degraded", url: ALERTMANAGER_URL },
-        { name: "Ollama", status: isRenderOrProd ? "Unavailable" : "Degraded", url: OLLAMA_URL }
+        backendSvc,
+        mongoSvc,
+        geminiSvc,
+        grafanaCloudMetricsSvc,
+        localPromSvc,
+        alertingService,
+        grafanaSvc
     ];
 
-    // Parallel ping checks for external services
-    await Promise.allSettled([
-        checkPrometheusHealth().then((h) => {
-            const svc = services.find(s => s.name.includes("Prometheus"));
-            if (svc) {
-                svc.status = h.healthy ? "Healthy" : (h.isCloud ? "Critical" : (isRenderOrProd ? "Unavailable" : "Degraded"));
-            }
-        }),
+    // Global status evaluation
+    const anyCritical = services.some(s => s.status === "Critical");
+    const anyUnavailable = services.some(s => s.status === "Unavailable");
+    const anyDegraded = services.some(s => s.status === "Degraded");
+    const primaryHealthy = isMongoHealthy && (cloudPromStatus === "Healthy" || localPromStatus === "Healthy") && geminiStatus.startsWith("Healthy");
 
-        axios.get(`${GRAFANA_URL}/api/health`, { timeout: 1500 })
-            .then(() => { services.find(s => s.name === "Grafana").status = "Healthy"; })
-            .catch(() => {}),
-
-        axios.get(`${ALERTMANAGER_URL}/-/healthy`, { timeout: 1500 })
-            .then(() => { services.find(s => s.name === "Alertmanager").status = "Healthy"; })
-            .catch(() => {}),
-
-        axios.get(`${OLLAMA_URL}/api/version`, { timeout: 1500 })
-            .then(() => { services.find(s => s.name === "Ollama").status = "Healthy"; })
-            .catch(() => {})
-    ]);
-
-    const isMongoHealthy = mongoose.connection.readyState === 1;
-    const promSvc = services.find(s => s.name.includes("Prometheus"));
-    const isPromHealthy = promSvc && promSvc.status === "Healthy";
-
-    const globalStatus = isMongoHealthy && isPromHealthy ? "HEALTHY" : isMongoHealthy ? "WARNING" : "CRITICAL";
+    let globalStatus = "HEALTHY";
+    if (!isMongoHealthy || anyCritical) {
+        globalStatus = "CRITICAL";
+    } else if (anyUnavailable || anyDegraded || !primaryHealthy) {
+        globalStatus = "WARNING";
+    }
 
     res.json({
         success: true,

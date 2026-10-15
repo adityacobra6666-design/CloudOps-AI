@@ -714,9 +714,22 @@ html, body, #root {
     border-radius: 50%;
 }
 
-.status-dot-sm.healthy { background: var(--color-healthy); }
-.status-dot-sm.degraded { background: var(--color-warning); }
-.status-dot-sm.critical { background: var(--color-critical); }
+.status-dot-sm.healthy, .status-dot-sm.connected { background: var(--color-healthy); }
+.status-dot-sm.degraded, .status-dot-sm.warning, .status-dot-sm.awaiting-connection { background: var(--color-warning); }
+.status-dot-sm.critical, .status-dot-sm.unavailable { background: var(--color-critical); }
+.status-dot-sm.not-configured, .status-dot-sm.unknown { background: var(--color-text-muted); }
+
+.svc-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.svc-text-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
 
 .svc-name {
     font-size: 0.88rem;
@@ -725,15 +738,24 @@ html, body, #root {
     transition: color 0.25s ease;
 }
 
+.svc-details-text {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    line-height: 1.2;
+}
+
 .svc-badge {
     font-size: 0.75rem;
     font-weight: 700;
     padding: 3px 8px;
     border-radius: 6px;
+    white-space: nowrap;
 }
 
-.svc-badge.healthy { background: var(--color-healthy-bg); color: var(--color-healthy); }
-.svc-badge.degraded { background: var(--color-warning-bg); color: var(--color-warning); }
+.svc-badge.healthy, .svc-badge.connected { background: var(--color-healthy-bg); color: var(--color-healthy); }
+.svc-badge.degraded, .svc-badge.warning, .svc-badge.awaiting-connection { background: var(--color-warning-bg); color: var(--color-warning); }
+.svc-badge.critical, .svc-badge.unavailable { background: var(--color-critical-bg); color: var(--color-critical); }
+.svc-badge.not-configured, .svc-badge.unknown { background: rgba(156, 163, 175, 0.15); color: var(--color-text-muted); }
 
 /* RELIABILITY & AI OVERVIEW HELPER STYLES */
 

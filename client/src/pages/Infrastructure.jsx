@@ -54,7 +54,7 @@ export default function Infrastructure() {
         {
             name: "prometheus",
             role: "Metrics Collector & Time-Series DB",
-            status: safeServices.find(s => s.name === "Prometheus")?.status || "Healthy",
+            status: safeServices.find(s => s.name?.includes("Prometheus") || s.name?.includes("Metrics"))?.status || "Not Configured",
             cpu: "8%",
             memory: "185 MB",
             network: "2.1 MB/s",
@@ -64,7 +64,7 @@ export default function Infrastructure() {
         {
             name: "grafana",
             role: "Observability Dashboards",
-            status: safeServices.find(s => s.name === "Grafana")?.status || "Healthy",
+            status: safeServices.find(s => s.name === "Grafana")?.status || "Not Configured",
             cpu: "3%",
             memory: "120 MB",
             network: "0.1 MB/s",
@@ -72,9 +72,9 @@ export default function Infrastructure() {
             uptime: "99.90%"
         },
         {
-            name: "alertmanager",
+            name: "alert-service",
             role: "Alert Routing & Webhooks",
-            status: safeServices.find(s => s.name === "Alertmanager")?.status || "Healthy",
+            status: safeServices.find(s => s.name?.includes("Alert"))?.status || "Not Configured",
             cpu: "1%",
             memory: "45 MB",
             network: "0.05 MB/s",
@@ -84,7 +84,7 @@ export default function Infrastructure() {
         {
             name: "gemini-api",
             role: "AI Incident Analysis & Remediation (Gemini API)",
-            status: safeServices.find(s => s.name?.includes("Gemini") || s.name === "Ollama")?.status || "Connected",
+            status: safeServices.find(s => s.name?.includes("Gemini"))?.status || "Not Configured",
             cpu: "Serverless",
             memory: "API Cloud",
             network: "0.2 MB/s",

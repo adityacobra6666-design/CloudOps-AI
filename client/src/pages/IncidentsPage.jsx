@@ -32,6 +32,9 @@ export default function IncidentsPage() {
     const [remediationMsg, setRemediationMsg] = useState(null);
     const [isEvaluating, setIsEvaluating] = useState(false);
     const [evaluateMsg, setEvaluateMsg] = useState(null);
+    const [remediationHistory, setRemediationHistory] = useState([]);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyError, setHistoryError] = useState(null);
 
     // New Incident Form
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -41,6 +44,13 @@ export default function IncidentsPage() {
 
     const isFetchingRef = useRef(false);
     const analysisRequestRef = useRef(0);
+
+    const normalizeRemediationHistory = (res) => {
+        if (Array.isArray(res)) return res;
+        if (Array.isArray(res?.data)) return res.data;
+        if (Array.isArray(res?.history)) return res.history;
+        return [];
+    };
 
     const fetchIncidentsData = async (isInitial = false) => {
         if (isFetchingRef.current) return;
@@ -87,11 +97,36 @@ export default function IncidentsPage() {
 
     // Fetch remediation history when an incident is selected
     useEffect(() => {
+        let isMounted = true;
         if (selectedIncident?._id) {
+            setHistoryLoading(true);
+            setHistoryError(null);
             getRemediationHistory(selectedIncident._id)
-                .then(res => setRemediationHistory(res.data || []))
-                .catch(() => setRemediationHistory([]));
+                .then(res => {
+                    if (isMounted) {
+                        setRemediationHistory(normalizeRemediationHistory(res));
+                    }
+                })
+                .catch(err => {
+                    if (isMounted) {
+                        setRemediationHistory([]);
+                        setHistoryError(err?.message || "Failed to load remediation history");
+                    }
+                })
+                .finally(() => {
+                    if (isMounted) {
+                        setHistoryLoading(false);
+                    }
+                });
+        } else {
+            setRemediationHistory([]);
+            setHistoryLoading(false);
+            setHistoryError(null);
         }
+
+        return () => {
+            isMounted = false;
+        };
     }, [selectedIncident?._id]);
 
     // Handle Escape key to close modals
@@ -194,8 +229,13 @@ export default function IncidentsPage() {
             const res = await executeRemediation(incidentId);
             setRemediationMsg(`Result: ${res.message}`);
 
-            const updatedHistory = await getRemediationHistory(incidentId);
-            setRemediationHistory(updatedHistory.data || []);
+            try {
+                const updatedHistory = await getRemediationHistory(incidentId);
+                setRemediationHistory(normalizeRemediationHistory(updatedHistory));
+                setHistoryError(null);
+            } catch (histErr) {
+                console.error("Failed to refresh remediation history:", histErr);
+            }
             fetchIncidentsData(false);
         } catch (err) {
             setRemediationMsg(`Remediation Error: ${err.message}`);
@@ -702,7 +742,21 @@ export default function IncidentsPage() {
                             )}
 
                             {/* REMEDIATION HISTORY FOR THIS INCIDENT */}
-                            {remediationHistory.length > 0 && (
+                            {historyLoading ? (
+                                <div className="detail-section">
+                                    <h4>Execution Audit History</h4>
+                                    <div className="text-muted" style={{ padding: "8px 0", fontSize: "0.85rem" }}>
+                                        Loading remediation history...
+                                    </div>
+                                </div>
+                            ) : historyError ? (
+                                <div className="detail-section">
+                                    <h4>Execution Audit History</h4>
+                                    <div className="remediation-msg-alert error" style={{ color: "#EF4444" }}>
+                                        ⚠️ {historyError}
+                                    </div>
+                                </div>
+                            ) : remediationHistory.length > 0 ? (
                                 <div className="detail-section">
                                     <h4>Execution Audit History</h4>
                                     <div className="table-responsive">
@@ -717,8 +771,8 @@ export default function IncidentsPage() {
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {remediationHistory.map((item) => (
-                                                    <tr key={item._id}>
+                                                {remediationHistory.map((item, idx) => (
+                                                    <tr key={item._id || `${item.action || "action"}-${item.createdAt || idx}`}>
                                                         <td><strong>{item.action}</strong></td>
                                                         <td>{item.target}</td>
                                                         <td>
@@ -732,7 +786,7 @@ export default function IncidentsPage() {
                                                             </span>
                                                         </td>
                                                         <td className="text-muted">
-                                                            {new Date(item.createdAt).toLocaleString()}
+                                                            {item.createdAt ? new Date(item.createdAt).toLocaleString() : "—"}
                                                         </td>
                                                     </tr>
                                                 ))}
@@ -740,7 +794,7 @@ export default function IncidentsPage() {
                                         </table>
                                     </div>
                                 </div>
-                            )}
+                            ) : null}
                         </div>
 
                         <div className="modal-footer">

@@ -60,18 +60,18 @@ exports.getIncidents = async (req,res)=>{
         });
 
 
-    }catch(error){
-
+    } catch(error) {
         res.status(500).json({
-
-            success:false,
-            message:error.message
-
+            success: false,
+            message: error.message
         });
-
     }
-
 };
+
+let lastAlertWebhookTime = null;
+
+exports.getLastAlertWebhookTime = () => lastAlertWebhookTime;
+
 exports.alertWebhook = async (req, res) => {
     try {
         // Authenticate webhook when a secret is configured in environment
@@ -91,6 +91,8 @@ exports.alertWebhook = async (req, res) => {
                 });
             }
         }
+
+        lastAlertWebhookTime = new Date();
 
         const payload = req.body || {};
         const alerts = payload.alerts || [];

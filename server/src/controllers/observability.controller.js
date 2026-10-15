@@ -4,11 +4,15 @@ const {
     queryInstant,
     queryRange,
     checkPrometheusHealth,
+    checkGrafanaCloudHealth,
+    checkLocalPrometheusHealth,
     getPrometheusConfig,
     PROMETHEUS_URL
 } = require("../services/prometheus.service");
 const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
 const geminiService = require("../services/ai/gemini.service");
+const incidentController = require("./incidentController");
+const Incident = require("../models/Incident");
 
 const GRAFANA_URL = process.env.GRAFANA_URL || "http://grafana:3000";
 const ALERTMANAGER_URL = process.env.ALERTMANAGER_URL || "http://alertmanager:9093";
@@ -140,6 +144,21 @@ exports.getTelemetry = async (req, res) => {
                 } catch (_) {}
 
                 const alertSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
+                const isGrafanaCloudAlerting = process.env.ALERTING_PROVIDER === "grafana_cloud" || 
+                    (Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL) && process.env.ALERTING_PROVIDER !== "alertmanager");
+                let hasAlert = false;
+                try {
+                    hasAlert = Boolean(incidentController.getLastAlertWebhookTime ? incidentController.getLastAlertWebhookTime() : null);
+                    if (!hasAlert) {
+                        const count = await Incident.countDocuments({
+                            source: { $in: ["Prometheus Alertmanager", "Grafana", "Grafana Cloud"] }
+                        });
+                        hasAlert = count > 0;
+                    }
+                } catch (_) {}
+
+                const alertStatus = !alertSecret ? "Not configured" : (hasAlert ? "Connected" : "Degraded");
+                const alertDetails = !alertSecret ? "Webhook secret not configured" : (hasAlert ? "Webhook receiving alerts" : "Webhook configured; awaiting first alert delivery");
 
                 const services = [
                     { name: "Backend API", status: "Connected", details: "Node.js Express API" },
@@ -148,7 +167,7 @@ exports.getTelemetry = async (req, res) => {
                     { name: "Agent Prometheus", status: (freshStatus === "CONNECTED" && promConnected) ? "Connected" : "Unavailable", details: promConnected ? "Scraping local targets" : (conn.telemetry?.metrics?.prometheusError || "Unreachable") },
                     { name: "Kubernetes Cluster", status: (conn.k8sSummary?.nodesCount || 0) > 0 ? "Connected" : "Degraded", details: `${conn.k8sSummary?.nodesCount || 0} nodes` },
                     { name: "Gemini API", status: geminiStatus, details: geminiDetails },
-                    { name: "Alert Delivery", status: alertSecret ? "Connected" : "Not configured", details: alertSecret ? "Webhook authentication active" : "Webhook secret not configured" }
+                    { name: isGrafanaCloudAlerting ? "Grafana Cloud Managed Alerting" : "Alertmanager", status: alertStatus, details: alertDetails }
                 ];
 
                 return res.json({
@@ -368,26 +387,54 @@ exports.getTelemetry = async (req, res) => {
 
         // 9. Service Health checks
         const isRenderOrProd = Boolean(process.env.RENDER || process.env.NODE_ENV === "production");
-        const promHealth = await checkPrometheusHealth();
+        const cloudPromHealth = await checkGrafanaCloudHealth();
+        const localPromHealth = await checkLocalPrometheusHealth(isRenderOrProd);
+
         let geminiHealth = { configured: false, healthy: false, details: "Missing GEMINI_API_KEY" };
         try {
             geminiHealth = await geminiService.checkGeminiHealth();
         } catch (_) {}
 
+        const isCloudConfigured = Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL);
+        const isGrafanaCloudAlerting = process.env.ALERTING_PROVIDER === "grafana_cloud" || 
+            (isCloudConfigured && process.env.ALERTING_PROVIDER !== "alertmanager");
+
         const alertSecret = process.env.ALERTMANAGER_WEBHOOK_SECRET || process.env.ALERT_WEBHOOK_SECRET;
+        let hasDirectAlert = false;
+        try {
+            hasDirectAlert = Boolean(incidentController.getLastAlertWebhookTime ? incidentController.getLastAlertWebhookTime() : null);
+            if (!hasDirectAlert) {
+                const count = await Incident.countDocuments({
+                    source: { $in: ["Prometheus Alertmanager", "Grafana", "Grafana Cloud"] }
+                });
+                hasDirectAlert = count > 0;
+            }
+        } catch (_) {}
+
+        let alertStatus = "Not configured";
+        let alertDetails = "Webhook secret not configured";
+        if (alertSecret) {
+            alertStatus = hasDirectAlert ? "Connected" : "Degraded";
+            alertDetails = hasDirectAlert ? "Webhook receiving alerts" : "Webhook configured; awaiting first alert delivery";
+        }
 
         const services = [
             { name: "Backend API", status: "Connected", details: "Node.js Express API" },
             { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Connected" : "Unavailable", details: mongoose.connection.readyState === 1 ? "Database connected" : "Database disconnected" },
             {
-                name: config.isCloud ? "Grafana Cloud Prometheus" : "Local Prometheus",
-                status: promHealth.healthy ? (config.isCloud && totalNetVal === null && cpuValue === null ? "Degraded" : "Connected") : (config.isCloud ? "Unavailable" : (isRenderOrProd ? "Not configured" : "Unavailable")),
-                details: promHealth.error || (config.isCloud && totalNetVal === null && cpuValue === null ? "Connected but no metrics ingested" : (promHealth.healthy ? "Connected" : (isRenderOrProd ? "Not running on cloud host" : "Unreachable")))
+                name: "Grafana Cloud Metrics",
+                status: cloudPromHealth.configured ? (cloudPromHealth.healthy ? (totalNetVal === null && cpuValue === null ? "Degraded" : "Connected") : "Unavailable") : "Not configured",
+                details: cloudPromHealth.details
             },
             {
-                name: "Alert Delivery",
-                status: alertSecret ? "Connected" : (isRenderOrProd ? "Not configured" : "Unavailable"),
-                details: alertSecret ? "Webhook authentication active" : (isRenderOrProd ? "Webhook secret not configured" : "Local Alertmanager")
+                name: "Local Prometheus",
+                status: localPromHealth.configured ? (localPromHealth.healthy ? "Connected" : "Unavailable") : "Not configured",
+                details: localPromHealth.details
+            },
+            {
+                name: isGrafanaCloudAlerting ? "Grafana Cloud Managed Alerting" : "Alertmanager",
+                status: alertStatus,
+                details: alertDetails
             },
             {
                 name: "Gemini API",
@@ -398,17 +445,7 @@ exports.getTelemetry = async (req, res) => {
         ];
 
         // Ping optional services without throwing or failing main telemetry
-        await Promise.allSettled([
-            axios.get(`${ALERTMANAGER_URL}/-/healthy`, { timeout: 1500 })
-                .then(() => {
-                    const svc = services.find(s => s.name === "Alert Delivery");
-                    if (svc) {
-                        svc.status = "Connected";
-                        svc.details = "Alertmanager reachable";
-                    }
-                })
-                .catch(() => {}),
-
+        const optionalPings = [
             kubernetesService.getClusterStatus()
                 .then((k8sStatus) => {
                     const svc = services.find(s => s.name === "Kubernetes Cluster");
@@ -424,7 +461,23 @@ exports.getTelemetry = async (req, res) => {
                         svc.details = isRenderOrProd ? "Not configured on cloud host" : "Unreachable";
                     }
                 })
-        ]);
+        ];
+
+        if (!isGrafanaCloudAlerting && (!isRenderOrProd || !/localhost|127\.0\.0\.1|alertmanager:9093/.test(ALERTMANAGER_URL))) {
+            optionalPings.push(
+                axios.get(`${ALERTMANAGER_URL}/-/healthy`, { timeout: 1500 })
+                    .then(() => {
+                        const svc = services.find(s => s.name === "Alertmanager");
+                        if (svc) {
+                            svc.status = "Connected";
+                            svc.details = "Alertmanager reachable";
+                        }
+                    })
+                    .catch(() => {})
+            );
+        }
+
+        await Promise.allSettled(optionalPings);
 
         return res.json({
             success: true,
