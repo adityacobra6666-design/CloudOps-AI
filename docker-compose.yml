@@ -169,11 +169,12 @@ services:
 
     restart: unless-stopped
 
+    entrypoint: ["/bin/sh", "/etc/prometheus/entrypoint.sh"]
+
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--config.file=/tmp/prometheus.generated.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=15d"
-      - "--enable-feature=expand-env"
 
     environment:
       GRAFANA_CLOUD_REMOTE_WRITE_URL: ${GRAFANA_CLOUD_REMOTE_WRITE_URL:-}
@@ -181,6 +182,7 @@ services:
       GRAFANA_CLOUD_API_KEY: ${GRAFANA_CLOUD_API_KEY:-}
 
     volumes:
+      - ./monitoring/prometheus/entrypoint.sh:/etc/prometheus/entrypoint.sh:ro
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus

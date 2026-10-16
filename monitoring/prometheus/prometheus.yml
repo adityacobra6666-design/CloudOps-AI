@@ -27,11 +27,11 @@ rule_files:
 #   --enable-feature=expand-env
 # and uncomment the remote_write block below, or use prometheus.cloud.yml:
 #
-# remote_write:
-#   - url: "${GRAFANA_CLOUD_REMOTE_WRITE_URL}"
-#     basic_auth:
-#       username: "${GRAFANA_CLOUD_USER}"
-#       password: "${GRAFANA_CLOUD_API_KEY}"
+remote_write:
+  - url: "${GRAFANA_CLOUD_REMOTE_WRITE_URL}"
+    basic_auth:
+      username: "${GRAFANA_CLOUD_USER}"
+      password: "${GRAFANA_CLOUD_API_KEY}"
 #     write_relabel_configs:
 #       - target_label: cluster
 #         replacement: "cloudops-production"
