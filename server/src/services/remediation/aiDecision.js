@@ -1,5 +1,6 @@
 const axios = require("axios");
 const aiProvider = require("../ai");
+const geminiService = require("../ai/gemini.service");
 const {
     ALLOWED_ACTIONS,
     ALLOWED_TARGETS

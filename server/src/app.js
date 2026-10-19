@@ -61,6 +61,7 @@ const corsOrigins = process.env.CORS_ORIGINS
 const clientUrl = process.env.CLIENT_URL ? process.env.CLIENT_URL.trim().replace(/\/+$/, "") : null;
 
 const allowedOrigins = [
+    "https://cloudops-ai-frontend-project.onrender.com",
     "https://cloudops-ai-frontend.onrender.com",
     ...corsOrigins,
     ...(clientUrl ? [clientUrl] : []),

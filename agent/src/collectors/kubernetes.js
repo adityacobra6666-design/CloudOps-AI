@@ -1,10 +1,54 @@
 const k8s = require("@kubernetes/client-node");
 const fs = require("fs");
+const path = require("path");
+const os = require("os");
+
+function resolveKubeconfigPath(p) {
+    if (!p) return path.join(os.homedir(), ".kube", "config");
+    if (p.startsWith("~/") || p === "~") {
+        return path.join(os.homedir(), p.slice(1));
+    }
+    return path.resolve(p);
+}
+
+function extractDiagnosticError(err) {
+    if (!err) return "Unknown cluster error";
+    let msg = err.message || String(err);
+    if (msg === "fetch failed" || err.name === "TypeError") {
+        const cause = err.cause;
+        if (cause) {
+            const causeCode = cause.code || "";
+            const causeAddr = cause.address ? `${cause.address}${cause.port ? `:${cause.port}` : ""}` : "";
+            if (causeCode === "ECONNREFUSED" || cause.message?.includes("ECONNREFUSED")) {
+                return `Cluster API connection refused${causeAddr ? ` at ${causeAddr}` : ""} (apiserver not responding or Minikube stopped)`;
+            }
+            if (causeCode === "EHOSTUNREACH" || cause.message?.includes("EHOSTUNREACH")) {
+                return `Cluster API host unreachable${causeAddr ? ` at ${causeAddr}` : ""} (Minikube host is down or IP changed)`;
+            }
+            if (causeCode === "ENETUNREACH" || cause.message?.includes("ENETUNREACH")) {
+                return `Cluster API network unreachable${causeAddr ? ` at ${causeAddr}` : ""}`;
+            }
+            if (causeCode === "ETIMEDOUT" || cause.message?.includes("ETIMEDOUT")) {
+                return `Cluster API connection timed out${causeAddr ? ` at ${causeAddr}` : ""}`;
+            }
+            if (cause.message) {
+                return `Cluster API request failed: ${cause.message}`;
+            }
+        }
+        return "Cluster API request failed (network or host connection failure)";
+    }
+    if (err.cause && err.cause.message && !msg.includes(err.cause.message)) {
+        msg += ` (${err.cause.message})`;
+    }
+    return msg.replace(/(Bearer\s+)[A-Za-z0-9\-\._~\+\/]+=*/g, "$1[REDACTED]")
+              .replace(/(\/home\/[^\/]+)/g, "~");
+}
 
 class KubernetesCollector {
     constructor(kubeconfigPath) {
         this.kc = new k8s.KubeConfig();
         this.isInitialized = false;
+        this.kubeconfigPath = kubeconfigPath;
 
         this.initClient(kubeconfigPath);
     }
@@ -12,15 +56,16 @@ class KubernetesCollector {
     initClient(kubeconfigPath) {
         try {
             const inClusterToken = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+            const targetPath = resolveKubeconfigPath(kubeconfigPath || this.kubeconfigPath);
 
             if (fs.existsSync(inClusterToken)) {
                 this.kc.loadFromCluster();
                 this.isInitialized = true;
                 console.log("☸️ [AGENT K8S] Initialized client via In-Cluster ServiceAccount");
-            } else if (kubeconfigPath && fs.existsSync(kubeconfigPath)) {
-                this.kc.loadFromFile(kubeconfigPath);
+            } else if (targetPath && fs.existsSync(targetPath)) {
+                this.kc.loadFromFile(targetPath);
                 this.isInitialized = true;
-                console.log(`☸️ [AGENT K8S] Initialized client via Kubeconfig (${kubeconfigPath})`);
+                console.log(`☸️ [AGENT K8S] Initialized client via Kubeconfig (${targetPath})`);
             } else {
                 try {
                     this.kc.loadFromDefault();
@@ -43,6 +88,10 @@ class KubernetesCollector {
     }
 
     async collectClusterData(namespaces = ["cloudops", "default"]) {
+        if (!this.isInitialized || !this.coreApi || !this.appsApi) {
+            this.initClient(this.kubeconfigPath);
+        }
+
         if (!this.isInitialized) {
             return {
                 nodesCount: 0,
@@ -54,7 +103,7 @@ class KubernetesCollector {
                 deployments: [],
                 services: [],
                 clusterConnected: false,
-                k8sError: "Kubernetes client not initialized"
+                k8sError: "Kubernetes client not initialized: verify ~/.kube/config or KUBECONFIG"
             };
         }
 
@@ -82,8 +131,8 @@ class KubernetesCollector {
                 successfulQueries++;
             } catch (nodeErr) {
                 // If RBAC role is scoped to namespace only (least-privilege) or cluster is down
-                lastError = nodeErr.message;
-                console.log(`ℹ️ [AGENT K8S] Node read restricted or omitted: ${nodeErr.message}`);
+                lastError = extractDiagnosticError(nodeErr);
+                console.log(`ℹ️ [AGENT K8S] Node read restricted or omitted: ${lastError}`);
             }
 
             // 2. Pods across namespaces
@@ -108,7 +157,7 @@ class KubernetesCollector {
                     }
                     successfulQueries++;
                 } catch (e) {
-                    lastError = e.message;
+                    lastError = extractDiagnosticError(e);
                 }
             }
 
@@ -131,7 +180,7 @@ class KubernetesCollector {
                     }
                     successfulQueries++;
                 } catch (e) {
-                    lastError = e.message;
+                    lastError = extractDiagnosticError(e);
                 }
             }
 
@@ -152,7 +201,7 @@ class KubernetesCollector {
                     }
                     successfulQueries++;
                 } catch (e) {
-                    lastError = e.message;
+                    lastError = extractDiagnosticError(e);
                 }
             }
 
@@ -174,7 +223,8 @@ class KubernetesCollector {
                 k8sError: clusterConnected ? null : (lastError || "Kubernetes cluster query failed")
             };
         } catch (error) {
-            console.error(`❌ [AGENT K8S] Error collecting cluster data: ${error.message}`);
+            const diagError = extractDiagnosticError(error);
+            console.error(`❌ [AGENT K8S] Error collecting cluster data: ${diagError}`);
             return {
                 nodesCount: 0,
                 podsCount: 0,
@@ -185,10 +235,13 @@ class KubernetesCollector {
                 deployments: [],
                 services: [],
                 clusterConnected: false,
-                k8sError: error.message
+                k8sError: diagError
             };
         }
     }
 }
+
+KubernetesCollector.extractDiagnosticError = extractDiagnosticError;
+KubernetesCollector.resolveKubeconfigPath = resolveKubeconfigPath;
 
 module.exports = KubernetesCollector;

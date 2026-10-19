@@ -2,8 +2,8 @@ const k8s = require("@kubernetes/client-node");
 
 class RemediationExecutor {
     constructor(k8sCollector, config) {
-        this.k8sCollector = k8sCollector;
-        this.config = config;
+        this.config = config || require("../config");
+        this.k8sCollector = k8sCollector || new (require("../collectors/kubernetes"))(this.config?.kubeconfigPath);
 
         // Replay Protection Cache (stores commandId -> result)
         this.executedCommands = new Map();
@@ -31,6 +31,11 @@ class RemediationExecutor {
                 valid: false,
                 reason: `Action "${action}" is NOT in the agent whitelist. Allowed actions: ${this.config.allowedActions.join(", ")}`
             };
+        }
+
+        // QUERY_CLUSTER is permitted read-only cluster inspection
+        if (action === "QUERY_CLUSTER") {
+            return { valid: true };
         }
 
         // 2. Target Check
@@ -130,6 +135,38 @@ class RemediationExecutor {
             return rejectResult;
         }
 
+        if (action === "QUERY_CLUSTER") {
+            try {
+                console.log(`🔍 [AGENT EXEC] Executing read-only cluster query (commandId: ${commandId})...`);
+                const requestedNs = parameters?.namespaces || (target?.namespace ? [target.namespace] : null) || this.config.allowedNamespaces || ["cloudops", "default"];
+                const clusterData = await this.k8sCollector.collectClusterData(requestedNs);
+                const queryResult = {
+                    commandId,
+                    startedAt,
+                    completedAt: new Date().toISOString(),
+                    status: clusterData.clusterConnected ? "SUCCEEDED" : "FAILED",
+                    message: clusterData.clusterConnected
+                        ? `Cluster query completed: ${clusterData.nodesCount} nodes, ${clusterData.podsCount} pods, ${clusterData.deploymentsCount} deployments`
+                        : `Cluster query failed: ${clusterData.k8sError || "Cluster unreachable"}`,
+                    resultingState: clusterData,
+                    error: clusterData.k8sError || null
+                };
+                this.cacheResult(commandId, queryResult);
+                return queryResult;
+            } catch (err) {
+                const failResult = {
+                    commandId,
+                    startedAt,
+                    completedAt: new Date().toISOString(),
+                    status: "FAILED",
+                    message: `Cluster query error: ${err.message}`,
+                    error: err.message
+                };
+                this.cacheResult(commandId, failResult);
+                return failResult;
+            }
+        }
+
         if (!this.k8sCollector.isInitialized) {
             const failResult = {
                 commandId,
@@ -143,8 +180,8 @@ class RemediationExecutor {
             return failResult;
         }
 
-        const deploymentName = target.name.trim();
-        const namespace = target.namespace.trim();
+        const deploymentName = target?.name ? target.name.trim() : "unknown";
+        const namespace = target?.namespace ? target.namespace.trim() : "cloudops";
 
         console.log(`⚡ [AGENT EXEC] Executing ${action} on ${deploymentName} (namespace: ${namespace}, commandId: ${commandId})...`);
 

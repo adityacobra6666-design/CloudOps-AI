@@ -1514,6 +1514,84 @@ html, body, #root {
     margin: 0;
 }
 
+.k8s-diagnostic-box {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem auto;
+    max-width: 680px;
+    text-align: left;
+}
+
+.k8s-diagnostic-box code {
+    display: block;
+    font-family: monospace;
+    font-size: 0.85rem;
+    color: var(--color-danger, #DC2626);
+    word-break: break-word;
+    margin-top: 0.5rem;
+    background: transparent;
+}
+
+.k8s-diagnostic-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--color-danger, #DC2626);
+}
+
+.k8s-status-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.k8s-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.k8s-badge.connected {
+    background: rgba(16, 185, 129, 0.15);
+    color: #059669;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.k8s-badge.disconnected {
+    background: rgba(239, 68, 68, 0.12);
+    color: #DC2626;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.k8s-badge.checking {
+    background: rgba(59, 130, 246, 0.15);
+    color: #2563EB;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.k8s-badge.docker {
+    background: rgba(107, 114, 128, 0.15);
+    color: #4B5563;
+    border: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+.k8s-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+}
+
 /* =========================================
    TIMELINE
 ========================================= */

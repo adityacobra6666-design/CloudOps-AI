@@ -3,10 +3,11 @@ const assert = require("node:assert/strict");
 
 const RemediationExecutor = require("../src/executor/remediation");
 const ApiClient = require("../src/services/apiClient");
+const KubernetesCollector = require("../src/collectors/kubernetes");
 
 describe("Agent Remediation Executor & Safety Tests", () => {
     const mockConfig = {
-        allowedActions: ["RESTART_SERVICE", "SCALE_SERVICE"],
+        allowedActions: ["RESTART_SERVICE", "SCALE_SERVICE", "QUERY_CLUSTER"],
         allowedTargetTypes: ["deployment"],
         allowedNamespaces: ["cloudops", "default"],
         allowedDeployments: ["backend", "cloudops-backend", "cloudops-server", "cloudops-mongodb"],
@@ -308,3 +309,78 @@ describe("Agent ApiClient Error & Revocation Handling", () => {
         assert.equal(client.isRevoked, true);
     });
 });
+
+describe("Agent QUERY_CLUSTER & Error Diagnostics Tests", () => {
+    it("should approve and execute QUERY_CLUSTER successfully", async () => {
+        const mockCollector = {
+            isInitialized: true,
+            collectClusterData: async () => ({
+                nodesCount: 1,
+                podsCount: 5,
+                deploymentsCount: 2,
+                servicesCount: 2,
+                nodes: [{ name: "minikube", status: "Ready" }],
+                pods: [{ name: "cloudops-backend-1", status: "Running" }],
+                deployments: [{ name: "cloudops-backend", replicas: 2 }],
+                services: [{ name: "cloudops-backend" }],
+                clusterConnected: true,
+                k8sError: null
+            })
+        };
+
+        const executor = new RemediationExecutor(mockCollector, {
+            allowedActions: ["RESTART_SERVICE", "SCALE_SERVICE", "QUERY_CLUSTER"]
+        });
+
+        const command = {
+            commandId: "cmd-query-test-1",
+            action: "QUERY_CLUSTER",
+            parameters: { namespaces: ["cloudops", "default"] }
+        };
+
+        const check = executor.validateCommand(command);
+        assert.equal(check.valid, true);
+
+        const result = await executor.executeCommand(command);
+        assert.equal(result.status, "SUCCEEDED");
+        assert.equal(result.resultingState.clusterConnected, true);
+        assert.equal(result.resultingState.nodesCount, 1);
+    });
+
+    it("should safely convert Node fetch ECONNREFUSED into informative diagnostic", () => {
+        const fetchError = new TypeError("fetch failed");
+        fetchError.cause = {
+            errno: -111,
+            code: "ECONNREFUSED",
+            syscall: "connect",
+            address: "192.168.250.2",
+            port: 8443
+        };
+
+        const diag = KubernetesCollector.extractDiagnosticError(fetchError);
+        assert.ok(diag.includes("Cluster API connection refused at 192.168.250.2:8443"));
+        assert.equal(diag.includes("fetch failed"), false);
+    });
+
+    it("should safely convert Node fetch EHOSTUNREACH into informative diagnostic", () => {
+        const fetchError = new TypeError("fetch failed");
+        fetchError.cause = {
+            errno: -113,
+            code: "EHOSTUNREACH",
+            syscall: "connect",
+            address: "192.168.250.2",
+            port: 8443
+        };
+
+        const diag = KubernetesCollector.extractDiagnosticError(fetchError);
+        assert.ok(diag.includes("Cluster API host unreachable at 192.168.250.2:8443"));
+        assert.equal(diag.includes("fetch failed"), false);
+    });
+
+    it("should expand ~ in kubeconfig path", () => {
+        const resolved = KubernetesCollector.resolveKubeconfigPath("~/.kube/config");
+        assert.equal(resolved.startsWith("~"), false);
+        assert.ok(resolved.endsWith(".kube/config"));
+    });
+});
+

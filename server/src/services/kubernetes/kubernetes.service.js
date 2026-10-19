@@ -172,7 +172,30 @@ class KubernetesService {
     sanitizeError(error) {
         if (!error) return "Unknown Kubernetes API error";
         let msg = error.message || String(error);
-        if (error.cause && error.cause.message) {
+        if (msg === "fetch failed" || error.name === "TypeError") {
+            const cause = error.cause;
+            if (cause) {
+                const causeCode = cause.code || "";
+                const causeAddr = cause.address ? `${cause.address}${cause.port ? `:${cause.port}` : ""}` : "";
+                if (causeCode === "ECONNREFUSED" || cause.message?.includes("ECONNREFUSED")) {
+                    return `Cluster API connection refused${causeAddr ? ` at ${causeAddr}` : ""} (apiserver not responding or Minikube stopped)`;
+                }
+                if (causeCode === "EHOSTUNREACH" || cause.message?.includes("EHOSTUNREACH")) {
+                    return `Cluster API host unreachable${causeAddr ? ` at ${causeAddr}` : ""} (Minikube host is down or IP changed)`;
+                }
+                if (causeCode === "ENETUNREACH" || cause.message?.includes("ENETUNREACH")) {
+                    return `Cluster API network unreachable${causeAddr ? ` at ${causeAddr}` : ""}`;
+                }
+                if (causeCode === "ETIMEDOUT" || cause.message?.includes("ETIMEDOUT")) {
+                    return `Cluster API connection timed out${causeAddr ? ` at ${causeAddr}` : ""}`;
+                }
+                if (cause.message) {
+                    return `Cluster API request failed: ${cause.message}`;
+                }
+            }
+            return "Cluster API request failed (network or host unreachable)";
+        }
+        if (error.cause && error.cause.message && !msg.includes(error.cause.message)) {
             msg += ` (${error.cause.message})`;
         }
         // Redact any tokens or raw sensitive paths

@@ -60,20 +60,43 @@ export default function KubernetesPage() {
         return () => { isMounted = false; };
     }, []);
 
-    const fetchK8s = useCallback(async (connId = selectedEnvironment, showLoading = true) => {
+    const [retrying, setRetrying] = useState(false);
+
+    const fetchK8s = useCallback(async (connId = selectedEnvironment, showLoading = true, forceRefresh = false) => {
         try {
             if (showLoading) setLoading(true);
             setErrorMsg(null);
             const queryConnId = connId || selectedEnvironment || "local";
-            const data = await getKubernetesOverview(undefined, queryConnId);
+            const data = await getKubernetesOverview(undefined, queryConnId, forceRefresh);
             setK8sData(data);
+            return data;
         } catch (err) {
             console.error("K8s fetch error:", err);
             setErrorMsg(err.message || "Failed to connect to Kubernetes API");
+            return null;
         } finally {
             if (showLoading) setLoading(false);
         }
     }, [selectedEnvironment]);
+
+    const handleRetry = async () => {
+        try {
+            setRetrying(true);
+            setErrorMsg(null);
+            setSuccessMsg(null);
+            const queryConnId = selectedEnvironment || "local";
+            const data = await fetchK8s(queryConnId, false, true);
+            if (data?.clusterReachable) {
+                setSuccessMsg("Cluster query succeeded! Live Kubernetes telemetry refreshed.");
+            } else if (data?.statusMessage) {
+                setErrorMsg(`Diagnostic check: ${data.statusMessage}`);
+            }
+        } catch (err) {
+            setErrorMsg(err?.message || "Failed to retry cluster connection.");
+        } finally {
+            setRetrying(false);
+        }
+    };
 
     useEffect(() => {
         let isMounted = true;
@@ -93,7 +116,7 @@ export default function KubernetesPage() {
             });
 
         const interval = setInterval(() => {
-            fetchK8s(selectedEnvironment, false);
+            fetchK8s(selectedEnvironment, false, false);
         }, 10000);
         return () => {
             isMounted = false;
@@ -103,9 +126,17 @@ export default function KubernetesPage() {
 
     // Active connection state helper
     const currentConnection = availableConnections.find(c => c._id === selectedEnvironment);
-    const isConnectionAvailable = selectedEnvironment === "local"
-        ? Boolean(k8sData?.connected)
-        : (currentConnection ? (currentConnection.status === "CONNECTED" && currentConnection.enabled !== false) : Boolean(k8sData?.connected));
+    const isAgentTarget = Boolean(currentConnection || (selectedEnvironment && selectedEnvironment !== "local"));
+    const isAgentConnected = isAgentTarget
+        ? (k8sData?.agentConnected ?? (currentConnection?.status === "CONNECTED"))
+        : Boolean(k8sData?.agentConnected);
+    const isClusterReachable = Boolean(k8sData?.clusterReachable || (k8sData?.connected && k8sData?.mode !== "docker_fallback"));
+    const isConnectionAvailable = isClusterReachable;
+
+    const isChecking = loading && !k8sData;
+    const isClusterUnavailable = isAgentTarget && isAgentConnected && !isClusterReachable;
+    const isAgentDisconnected = isAgentTarget && !isAgentConnected;
+    const isDockerFallback = !isAgentTarget && !isClusterReachable;
 
     const getEffectiveConnectionId = () => {
         if (selectedEnvironment && selectedEnvironment !== "local") {
@@ -221,21 +252,50 @@ export default function KubernetesPage() {
                         aria-label="Active Cluster Environment"
                     >
                         {availableConnections.length === 0 && (
-                            <option value="local">💻 Local Cluster (Minikube / Kind)</option>
+                            <option value="local">💻 Direct Local Host (Docker Fallback)</option>
                         )}
-                        {availableConnections.map((c) => (
-                            <option key={c._id} value={c._id}>
-                                🌐 {c.name} ({c.status})
-                            </option>
-                        ))}
+                        {availableConnections.map((c) => {
+                            let stateLabel = "Checking...";
+                            if (c.status === "REVOKED") {
+                                stateLabel = "Revoked";
+                            } else if (c.status !== "CONNECTED") {
+                                stateLabel = "Agent Disconnected";
+                            } else if (c.k8sSummary?.clusterConnected !== false && !c.k8sSummary?.k8sError && c.k8sSummary?.updatedAt) {
+                                stateLabel = "Cluster Reachable";
+                            } else if (c.k8sSummary?.k8sError) {
+                                stateLabel = "Agent Connected, Cluster Unavailable";
+                            } else if (!c.k8sSummary?.updatedAt) {
+                                stateLabel = "Checking Connection";
+                            } else {
+                                stateLabel = "Agent Connected";
+                            }
+                            return (
+                                <option key={c._id} value={c._id}>
+                                    🌐 {c.name} ({stateLabel})
+                                </option>
+                            );
+                        })}
                         {availableConnections.length > 0 && (
-                            <option value="local">💻 Direct Local Host</option>
+                            <option value="local">💻 Direct Local Host (Docker Mode)</option>
                         )}
                     </select>
                 </div>
-                <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>
-                    {selectedEnvironment === "local" ? "Direct Kubeconfig Integration" : "Connected Agent Outbound Channel"}
-                </span>
+                <div className="k8s-status-badges">
+                    {isAgentTarget ? (
+                        <>
+                            <span className={`k8s-badge ${isAgentConnected ? "connected" : "disconnected"}`}>
+                                {isAgentConnected ? "● Agent Connected" : "○ Agent Disconnected"}
+                            </span>
+                            <span className={`k8s-badge ${isClusterReachable ? "connected" : "disconnected"}`}>
+                                {isClusterReachable ? "● Cluster Reachable" : "○ Cluster Unavailable"}
+                            </span>
+                        </>
+                    ) : (
+                        <span className={`k8s-badge ${isClusterReachable ? "connected" : "docker"}`}>
+                            {isClusterReachable ? "● Local Cluster Reachable" : "🐳 Docker Host Mode"}
+                        </span>
+                    )}
+                </div>
             </div>
 
             {/* Notification Badges */}
@@ -258,53 +318,207 @@ export default function KubernetesPage() {
                 </div>
             )}
 
-            {k8sData?.dataStatus === "KUBERNETES_ERROR" && (
-                <div className="alert-banner error" style={{ backgroundColor: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#DC2626", marginBottom: "1rem", padding: "0.75rem 1rem", borderRadius: "8px", display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span>❌ <strong>Kubernetes query failed:</strong> {k8sData.statusMessage || "The remote agent cannot reach the Kubernetes cluster API."}</span>
+            {isChecking ? (
+                <div className="empty-state">
+                    <span className="btn-spinner" style={{ width: "22px", height: "22px", display: "inline-block", marginRight: "10px" }} />
+                    Checking cluster connection...
                 </div>
-            )}
-
-            {loading && !k8sData ? (
-                <div className="empty-state">Connecting to Kubernetes API...</div>
-            ) : !k8sData?.connected ? (
-                /* DISCONNECTED / UNCONFIGURED STATE */
+            ) : isClusterUnavailable ? (
+                /* AGENT CONNECTED, CLUSTER UNAVAILABLE STATE */
                 <section className="dashboard-section">
-                    <div className="ops-card k8s-unconfigured-card">
+                    <div className="ops-card k8s-unconfigured-card" style={{ borderColor: "rgba(239, 68, 68, 0.4)" }}>
                         <div className="k8s-icon-header">
                             <span className="big-k8s-icon">☸️</span>
-                            <h2>Kubernetes Cluster Not Connected</h2>
+                            <div className="k8s-status-badges" style={{ justifyContent: "center", marginBottom: "0.75rem" }}>
+                                <span className="k8s-badge connected">
+                                    ● Agent Connected ({currentConnection?.name || "Local Agent"})
+                                </span>
+                                <span className="k8s-badge disconnected">
+                                    ○ Cluster API Unreachable
+                                </span>
+                            </div>
+                            <h2>Kubernetes Cluster API Unavailable</h2>
                             <p className="k8s-sub">
-                                {k8sData?.message || "The backend is operating in Standalone / Docker mode. Connect a Kubernetes cluster via KUBECONFIG or run in-cluster to enable live telemetry & pod orchestration."}
+                                The authenticated agent outbound channel is active, but the agent cannot reach your Kubernetes cluster API server.
                             </p>
                         </div>
 
-                        <div className="k8s-features-grid">
+                        <div className="k8s-diagnostic-box">
+                            <span className="k8s-diagnostic-label">Diagnostic Error Details:</span>
+                            <code>{k8sData?.statusMessage || "Cluster API unreachable (connection refused or network timeout)"}</code>
+                        </div>
+
+                        <div className="k8s-features-grid" style={{ maxWidth: "780px", margin: "0 auto 2rem auto" }}>
                             <div className="feature-tile">
-                                <span className="feat-title">🔌 Local Minikube / Kind</span>
-                                <p>Set <code>KUBECONFIG=~/.kube/config</code> to connect local Minikube or Kind cluster.</p>
+                                <span className="feat-title">1. Verify Cluster State</span>
+                                <p>If using Minikube or Kind locally, verify the cluster is active: run <code>minikube status</code> or <code>minikube start</code>.</p>
                             </div>
                             <div className="feature-tile">
-                                <span className="feat-title">☸️ Autonomous HPA Scaling</span>
-                                <p>Execute real <code>SCALE_SERVICE</code> actions through the backend @kubernetes/client-node library.</p>
+                                <span className="feat-title">2. Test Kubeconfig</span>
+                                <p>On your agent host, run <code>kubectl get nodes</code> to verify the kubeconfig server endpoint is valid.</p>
                             </div>
                             <div className="feature-tile">
-                                <span className="feat-title">🔄 Rolling Restarts</span>
-                                <p>Perform zero-downtime rolling pod updates via declarative deployment template annotations.</p>
+                                <span className="feat-title">3. Secure Channel</span>
+                                <p>All queries route securely through the existing authenticated outbound agent channel. No inbound ports required.</p>
+                            </div>
+                        </div>
+
+                        <div className="k8s-action-row">
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={handleRetry}
+                                disabled={retrying}
+                                style={{ padding: "0.6rem 1.4rem", fontSize: "0.95rem" }}
+                            >
+                                {retrying ? (
+                                    <>
+                                        <span className="btn-spinner" />
+                                        Retrying Connection...
+                                    </>
+                                ) : (
+                                    "🔄 Retry Connection"
+                                )}
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => fetchK8s(selectedEnvironment, true, false)}
+                                disabled={retrying}
+                            >
+                                Refresh Status
+                            </button>
+                        </div>
+                    </div>
+                </section>
+            ) : isAgentDisconnected ? (
+                /* AGENT DISCONNECTED STATE */
+                <section className="dashboard-section">
+                    <div className="ops-card k8s-unconfigured-card" style={{ borderColor: "rgba(239, 68, 68, 0.4)" }}>
+                        <div className="k8s-icon-header">
+                            <span className="big-k8s-icon">📡</span>
+                            <div className="k8s-status-badges" style={{ justifyContent: "center", marginBottom: "0.75rem" }}>
+                                <span className="k8s-badge disconnected">
+                                    ○ Agent Disconnected
+                                </span>
+                                <span className="k8s-badge disconnected">
+                                    ○ Cluster Unavailable
+                                </span>
+                            </div>
+                            <h2>Infrastructure Agent Disconnected</h2>
+                            <p className="k8s-sub">
+                                The agent <strong>"{currentConnection?.name || selectedEnvironment}"</strong> has not sent a heartbeat within the last 60 seconds.
+                            </p>
+                        </div>
+
+                        <div className="k8s-diagnostic-box">
+                            <span className="k8s-diagnostic-label">Agent Status:</span>
+                            <code>{k8sData?.statusMessage || "Agent heartbeat timeout (> 60s without telemetry ping)"}</code>
+                        </div>
+
+                        <div className="k8s-action-row">
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={handleRetry}
+                                disabled={retrying}
+                            >
+                                {retrying ? (
+                                    <>
+                                        <span className="btn-spinner" />
+                                        Checking Agent...
+                                    </>
+                                ) : (
+                                    "🔄 Retry Connection"
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </section>
+            ) : isDockerFallback ? (
+                /* STANDALONE DOCKER MODE CARD */
+                <section className="dashboard-section">
+                    <div className="ops-card k8s-unconfigured-card">
+                        <div className="k8s-icon-header">
+                            <span className="big-k8s-icon">🐳</span>
+                            <div className="k8s-status-badges" style={{ justifyContent: "center", marginBottom: "0.75rem" }}>
+                                <span className="k8s-badge docker">
+                                    🐳 Operating in Standalone Docker Mode
+                                </span>
+                            </div>
+                            <h2>Standalone Docker Host Mode</h2>
+                            <p className="k8s-sub">
+                                No connected Kubernetes agent or local cluster configuration found. The system is operating in standard Docker container management mode.
+                            </p>
+                        </div>
+
+                        <div className="k8s-features-grid" style={{ maxWidth: "780px", margin: "0 auto 2rem auto" }}>
+                            <div className="feature-tile">
+                                <span className="feat-title">🔌 Connect Kubernetes</span>
+                                <p>Start your local Minikube or Kind cluster, then launch the CloudOps agent locally to bridge telemetry.</p>
                             </div>
                             <div className="feature-tile">
-                                <span className="feat-title">🛡️ Policy & Audit Verification</span>
-                                <p>Strict target whitelisting (min 1, max 10 replicas) with post-execution metric convergence checks.</p>
+                                <span className="feat-title">📡 Outbound Telemetry</span>
+                                <p>The agent establishes an outbound HTTPS polling channel to Render. No public ports or DNS required.</p>
+                            </div>
+                            <div className="feature-tile">
+                                <span className="feat-title">🛡️ Policy Enforcement</span>
+                                <p>Read-only cluster queries and safe deployment scaling (1-10 replicas) are cryptographically validated.</p>
                             </div>
                         </div>
 
                         <div className="k8s-config-notice">
-                            <code>Backend Status: KUBERNETES_UNAVAILABLE (Fallback to Docker mode)</code>
+                            <code>Current Mode: STANDALONE_DOCKER (Kubernetes Not Configured)</code>
+                        </div>
+
+                        <div className="k8s-action-row">
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={handleRetry}
+                                disabled={retrying}
+                            >
+                                {retrying ? (
+                                    <>
+                                        <span className="btn-spinner" />
+                                        Detecting Cluster...
+                                    </>
+                                ) : (
+                                    "🔄 Detect Cluster / Retry"
+                                )}
+                            </button>
                         </div>
                     </div>
                 </section>
             ) : (
                 /* LIVE KUBERNETES DASHBOARD */
                 <>
+                    {/* Control Row with Refresh Button */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span className="k8s-badge connected" style={{ padding: "4px 10px", fontSize: "0.82rem" }}>
+                                ● Live Kubernetes Cluster
+                            </span>
+                            <span className="text-muted" style={{ fontSize: "0.85rem" }}>
+                                Namespace: <strong>{k8sData?.namespace || "cloudops"}</strong>
+                            </span>
+                        </div>
+                        <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={handleRetry}
+                            disabled={retrying}
+                        >
+                            {retrying ? (
+                                <>
+                                    <span className="btn-spinner" />
+                                    Refreshing...
+                                </>
+                            ) : (
+                                "🔄 Refresh Telemetry"
+                            )}
+                        </button>
+                    </div>
                     {/* Cluster Summary Metrics */}
                     <div className="metrics-grid">
                         <div className="metric-tile">

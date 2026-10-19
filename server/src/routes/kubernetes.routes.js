@@ -15,4 +15,7 @@ router.get("/services", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kub
 // Operational Kubernetes actions (scaling, restarts) require ENGINEER or ADMIN role
 router.post("/action", protect, requireRole("ENGINEER", "ADMIN"), kubernetesController.executeKubernetesAction);
 
+// On-demand cluster refresh (read-only query dispatch)
+router.post("/refresh", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kubernetesController.refreshKubernetesCluster);
+
 module.exports = router;

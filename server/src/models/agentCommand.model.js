@@ -27,7 +27,7 @@ const agentCommandSchema = new mongoose.Schema(
         },
         action: {
             type: String,
-            enum: ["RESTART_SERVICE", "SCALE_SERVICE"],
+            enum: ["RESTART_SERVICE", "SCALE_SERVICE", "QUERY_CLUSTER"],
             required: true
         },
         target: {

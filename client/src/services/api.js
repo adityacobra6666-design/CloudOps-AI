@@ -1,4 +1,14 @@
-const rawBaseUrl = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").trim().replace(/\/+$/, "");
+const getDefaultApiUrl = () => {
+    if (import.meta.env.VITE_API_URL) {
+        return import.meta.env.VITE_API_URL;
+    }
+    if (typeof window !== "undefined" && window.location?.hostname?.includes("onrender.com")) {
+        return "https://cloudops-ai-backend-project.onrender.com/api";
+    }
+    return "http://localhost:5000/api";
+};
+
+const rawBaseUrl = getDefaultApiUrl().trim().replace(/\/+$/, "");
 const API_URL = rawBaseUrl.endsWith("/api") ? rawBaseUrl : `${rawBaseUrl}/api`;
 
 const apiFetch = async (endpoint, options = {}) => {
@@ -178,12 +188,20 @@ export const getReliabilityOverview = async () => {
 // KUBERNETES APIs
 // =========================================
 
-export const getKubernetesOverview = async (namespace, connectionId) => {
+export const getKubernetesOverview = async (namespace, connectionId, refresh = false) => {
     const params = new URLSearchParams();
     if (namespace) params.append("namespace", namespace);
     if (connectionId) params.append("connectionId", connectionId);
+    if (refresh) params.append("refresh", "true");
     const qs = params.toString();
     return apiFetch(qs ? `/kubernetes/overview?${qs}` : "/kubernetes/overview");
+};
+
+export const refreshKubernetesCluster = async (connectionId, namespace) => {
+    return apiFetch("/kubernetes/refresh", {
+        method: "POST",
+        body: JSON.stringify({ connectionId, namespace })
+    });
 };
 
 export const getKubernetesStatus = async (connectionId) => {

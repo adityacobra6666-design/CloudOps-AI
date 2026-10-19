@@ -2,6 +2,14 @@ require("dotenv").config();
 const path = require("path");
 const os = require("os");
 
+function resolveKubeconfigPath(p) {
+    if (!p) return path.join(os.homedir(), ".kube", "config");
+    if (p.startsWith("~/") || p === "~") {
+        return path.join(os.homedir(), p.slice(1));
+    }
+    return path.resolve(p);
+}
+
 module.exports = {
     // CloudOps Control Plane URL
     cloudopsUrl: (process.env.CLOUDOPS_URL || "http://localhost:5000").replace(/\/+$/, ""),
@@ -18,7 +26,7 @@ module.exports = {
 
     // Local Customer Infrastructure Services
     prometheusUrl: (process.env.PROMETHEUS_URL || "http://localhost:9090").replace(/\/+$/, ""),
-    kubeconfigPath: process.env.KUBECONFIG || path.join(os.homedir(), ".kube", "config"),
+    kubeconfigPath: resolveKubeconfigPath(process.env.KUBECONFIG),
     
     // Polling & Heartbeat Intervals (ms)
     heartbeatIntervalMs: parseInt(process.env.HEARTBEAT_INTERVAL_MS || "20000", 10),
@@ -26,7 +34,7 @@ module.exports = {
     commandPollIntervalMs: parseInt(process.env.COMMAND_POLL_INTERVAL_MS || "5000", 10),
 
     // Defense-in-depth safety constraints
-    allowedActions: ["RESTART_SERVICE", "SCALE_SERVICE"],
+    allowedActions: ["RESTART_SERVICE", "SCALE_SERVICE", "QUERY_CLUSTER"],
     allowedTargetTypes: ["deployment"],
     allowedNamespaces: (process.env.ALLOWED_NAMESPACES || "cloudops,default,production,staging")
         .split(",")

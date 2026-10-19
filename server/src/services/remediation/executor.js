@@ -279,6 +279,7 @@ class AgentRemediationExecutor extends RemediationExecutor {
 
     async execute(action, target, context = {}) {
         const crypto = require("crypto");
+        const mongoose = require("mongoose");
         const AgentCommand = require("../../models/agentCommand.model");
         const InfrastructureConnection = require("../../models/infrastructureConnection.model");
 
@@ -287,7 +288,16 @@ class AgentRemediationExecutor extends RemediationExecutor {
             throw new Error("Cannot execute remote remediation: valid connectionId is required.");
         }
 
-        const connection = await InfrastructureConnection.findById(connectionId);
+        let connection = null;
+        if (mongoose.Types.ObjectId.isValid(connectionId)) {
+            connection = await InfrastructureConnection.findById(connectionId);
+        }
+        if (!connection) {
+            connection = await InfrastructureConnection.findOne({
+                $or: [{ agentId: connectionId }, { name: connectionId }]
+            });
+        }
+
         if (!connection) {
             throw new Error(`Connected infrastructure environment "${connectionId}" not found.`);
         }

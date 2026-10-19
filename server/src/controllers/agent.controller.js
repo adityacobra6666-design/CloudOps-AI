@@ -168,6 +168,10 @@ exports.telemetry = async (req, res) => {
         }
 
         if (k8s && typeof k8s === "object") {
+            let sanitizedK8sError = k8s.k8sError || null;
+            if (sanitizedK8sError === "fetch failed") {
+                sanitizedK8sError = "Cluster API unreachable (network or host connection failure)";
+            }
             connection.k8sSummary = {
                 nodesCount: Number(k8s.nodesCount || k8s.nodes?.length || 0),
                 podsCount: Number(k8s.podsCount || k8s.pods?.length || 0),
@@ -178,7 +182,7 @@ exports.telemetry = async (req, res) => {
                 deployments: Array.isArray(k8s.deployments) ? k8s.deployments : [],
                 services: Array.isArray(k8s.services) ? k8s.services : [],
                 clusterConnected: k8s.clusterConnected !== false,
-                k8sError: k8s.k8sError || null,
+                k8sError: sanitizedK8sError,
                 updatedAt: new Date()
             };
             connection.markModified("k8sSummary");
@@ -334,6 +338,25 @@ exports.submitCommandResult = async (req, res) => {
                 state: resultingState,
                 verifiedAt: new Date()
             };
+
+            // If action was QUERY_CLUSTER, update connection k8sSummary with fresh live topology
+            if (command.action === "QUERY_CLUSTER") {
+                connection.k8sSummary = {
+                    nodesCount: Number(resultingState.nodesCount || resultingState.nodes?.length || 0),
+                    podsCount: Number(resultingState.podsCount || resultingState.pods?.length || 0),
+                    deploymentsCount: Number(resultingState.deploymentsCount || resultingState.deployments?.length || 0),
+                    servicesCount: Number(resultingState.servicesCount || resultingState.services?.length || 0),
+                    nodes: Array.isArray(resultingState.nodes) ? resultingState.nodes : [],
+                    pods: Array.isArray(resultingState.pods) ? resultingState.pods : [],
+                    deployments: Array.isArray(resultingState.deployments) ? resultingState.deployments : [],
+                    services: Array.isArray(resultingState.services) ? resultingState.services : [],
+                    clusterConnected: resultingState.clusterConnected !== false,
+                    k8sError: resultingState.k8sError || null,
+                    updatedAt: new Date()
+                };
+                connection.markModified("k8sSummary");
+                await connection.save();
+            }
         }
 
         await command.save();
