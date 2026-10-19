@@ -169,8 +169,44 @@ class KubernetesService {
         return process.env.KUBERNETES_NAMESPACE || KUBERNETES_CONFIG.defaultNamespace || "all";
     }
 
+    extractStatusCode(error) {
+        if (!error) return null;
+        if (typeof error.statusCode === "number") return error.statusCode;
+        if (error.response && typeof error.response.statusCode === "number") return error.response.statusCode;
+        if (error.body) {
+            try {
+                const b = typeof error.body === "string" ? JSON.parse(error.body) : error.body;
+                if (typeof b?.code === "number") return b.code;
+            } catch (e) {}
+        }
+        const match = (error.message || "").match(/HTTP-Code:\s*(\d+)/i);
+        if (match) return parseInt(match[1], 10);
+        return null;
+    }
+
+    extractErrorMessage(error) {
+        if (!error) return null;
+        if (error.body) {
+            try {
+                const b = typeof error.body === "string" ? JSON.parse(error.body) : error.body;
+                if (b?.message) return b.message;
+            } catch (e) {}
+        }
+        return null;
+    }
+
     sanitizeError(error) {
         if (!error) return "Unknown Kubernetes API error";
+        let parsedBody = null;
+        if (error.body) {
+            try {
+                parsedBody = typeof error.body === "string" ? JSON.parse(error.body) : error.body;
+            } catch (e) {}
+        }
+        if (parsedBody && parsedBody.message) {
+            return parsedBody.message;
+        }
+
         let msg = error.message || String(error);
         if (msg === "fetch failed" || error.name === "TypeError") {
             const cause = error.cause;
@@ -530,78 +566,136 @@ class KubernetesService {
     // READ SPECIFIC DEPLOYMENT
     // =========================================
     async getDeployment(name, namespace) {
-        if (!name || typeof name !== "string") {
-            throw new Error("Invalid deployment name provided to getDeployment");
+        if (!name || typeof name !== "string" || !name.trim()) {
+            const err = new Error("Invalid deployment name provided to getDeployment");
+            err.statusCode = 400;
+            throw err;
         }
-        if (!this.checkConnection()) throw new Error("Kubernetes client not initialized");
-        const ns = namespace || this.getDefaultNamespace();
-
-        const res = await this.appsApi.readNamespacedDeployment({ name, namespace: ns });
-        const dep = res?.body || res;
-        if (!dep) {
-            throw new Error(`Deployment "${name}" not found in namespace "${ns}"`);
+        if (!this.checkConnection()) {
+            const err = new Error("Kubernetes client not initialized or cluster unreachable");
+            err.statusCode = 503;
+            throw err;
         }
+        const trimmedName = name.trim();
+        const ns = (namespace || this.getDefaultNamespace()).trim();
 
-        return {
-            name: dep.metadata?.name || name,
-            namespace: dep.metadata?.namespace || ns,
-            desired: dep.spec?.replicas ?? 0,
-            current: dep.status?.replicas ?? 0,
-            ready: dep.status?.readyReplicas ?? 0,
-            available: dep.status?.availableReplicas ?? 0,
-            raw: dep
-        };
+        try {
+            const res = await this.appsApi.readNamespacedDeployment({ name: trimmedName, namespace: ns });
+            const dep = res?.body || res;
+            if (!dep) {
+                const err = new Error(`Deployment "${trimmedName}" not found in namespace "${ns}"`);
+                err.statusCode = 404;
+                throw err;
+            }
+
+            return {
+                name: dep.metadata?.name || trimmedName,
+                namespace: dep.metadata?.namespace || ns,
+                desired: dep.spec?.replicas ?? 0,
+                replicas: dep.spec?.replicas ?? 0,
+                current: dep.status?.replicas ?? 0,
+                ready: dep.status?.readyReplicas ?? 0,
+                readyReplicas: dep.status?.readyReplicas ?? 0,
+                available: dep.status?.availableReplicas ?? 0,
+                availableReplicas: dep.status?.availableReplicas ?? 0,
+                updated: dep.status?.updatedReplicas ?? 0,
+                generation: dep.metadata?.generation ?? 1,
+                observedGeneration: dep.status?.observedGeneration ?? 0,
+                conditions: dep.status?.conditions || [],
+                raw: dep
+            };
+        } catch (err) {
+            if (err.statusCode) throw err;
+            const status = this.extractStatusCode(err) || (err.message?.includes("not found") ? 404 : 500);
+            const message = this.extractErrorMessage(err) || `Deployment "${trimmedName}" not found in namespace "${ns}"`;
+            const customErr = new Error(message);
+            customErr.statusCode = status;
+            throw customErr;
+        }
     }
 
     // =========================================
     // SCALE DEPLOYMENT
     // =========================================
     async scaleDeployment(name, newReplicas, namespace) {
-        if (!name || typeof name !== "string") {
-            throw new Error("Invalid deployment name provided for scaleDeployment");
+        if (!name || typeof name !== "string" || !name.trim()) {
+            const err = new Error("Invalid deployment name provided for scaleDeployment");
+            err.statusCode = 400;
+            throw err;
         }
-        const ns = namespace || this.getDefaultNamespace();
+        const trimmedName = name.trim();
+        const ns = (namespace || this.getDefaultNamespace()).trim();
         const min = KUBERNETES_CONFIG.minReplicas || 1;
         const max = KUBERNETES_CONFIG.maxReplicas || 10;
 
-        const targetReplicas = parseInt(newReplicas, 10);
-
-        if (isNaN(targetReplicas) || targetReplicas < min || targetReplicas > max) {
-            throw new Error(`Invalid replica count (${newReplicas}). Must be an integer between ${min} and ${max}.`);
+        const numReplicas = Number(newReplicas);
+        if (newReplicas === undefined || newReplicas === null || newReplicas === "" || !Number.isInteger(numReplicas) || numReplicas < min || numReplicas > max) {
+            const err = new Error(`Invalid replica count (${newReplicas}). Must be an integer between ${min} and ${max}.`);
+            err.statusCode = 400;
+            throw err;
         }
 
         if (!this.checkConnection()) {
-            throw new Error("Kubernetes client is not initialized");
+            const err = new Error("Kubernetes client is not initialized or cluster is unreachable");
+            err.statusCode = 503;
+            throw err;
         }
 
-        console.log(`☸️ Scaling deployment "${name}" in namespace "${ns}" to ${targetReplicas} replicas`);
+        console.log(`☸️ Scaling deployment "${trimmedName}" in namespace "${ns}" to ${numReplicas} replicas`);
 
-        const currentDep = await this.getDeployment(name, ns).catch(() => ({ desired: 1 }));
+        // Read current deployment state (throws 404 if not found)
+        const currentDep = await this.getDeployment(trimmedName, ns);
         const previousReplicas = currentDep.desired;
 
         // Apply RFC 6902 JSON Patch on /spec/replicas
         const patch = [
-            { op: "replace", path: "/spec/replicas", value: targetReplicas }
+            { op: "replace", path: "/spec/replicas", value: numReplicas }
         ];
 
-        await this.appsApi.patchNamespacedDeployment({
-            name,
-            namespace: ns,
-            body: patch
-        });
+        try {
+            await this.appsApi.patchNamespacedDeployment({
+                name: trimmedName,
+                namespace: ns,
+                body: patch
+            });
+        } catch (err) {
+            const status = this.extractStatusCode(err) || 500;
+            const message = this.extractErrorMessage(err) || this.sanitizeError(err);
+            const customErr = new Error(`Failed to scale deployment "${trimmedName}": ${message}`);
+            customErr.statusCode = status;
+            throw customErr;
+        }
 
         // Wait for state convergence
-        const convergence = await this.waitForDeploymentConvergence(name, targetReplicas, ns, 20000, 1500);
+        const convergence = await this.waitForDeploymentConvergence(trimmedName, numReplicas, ns, 25000, 1500);
+
+        if (!convergence.converged) {
+            return {
+                success: false,
+                converged: false,
+                statusCode: 504,
+                deployment: trimmedName,
+                namespace: ns,
+                previousReplicas,
+                newReplicas: numReplicas,
+                desiredReplicas: numReplicas,
+                readyReplicas: convergence.readyReplicas,
+                availableReplicas: convergence.availableReplicas,
+                message: `Scaling requested for "${trimmedName}" (${previousReplicas} ➔ ${numReplicas}), but rollout verification timed out (${convergence.readyReplicas}/${numReplicas} ready)`
+            };
+        }
 
         return {
             success: true,
-            deployment: name,
+            converged: true,
+            deployment: trimmedName,
             namespace: ns,
             previousReplicas,
-            newReplicas: targetReplicas,
+            newReplicas: numReplicas,
+            desiredReplicas: numReplicas,
             readyReplicas: convergence.readyReplicas,
-            converged: convergence.converged,
-            message: `Successfully scaled deployment "${name}" replicas from ${previousReplicas} to ${targetReplicas} (${convergence.readyReplicas}/${targetReplicas} ready)`
+            availableReplicas: convergence.availableReplicas,
+            message: `Successfully scaled deployment "${trimmedName}" replicas from ${previousReplicas} to ${numReplicas} (${convergence.readyReplicas}/${numReplicas} ready)`
         };
     }
 
@@ -609,18 +703,25 @@ class KubernetesService {
     // RESTART DEPLOYMENT (Rolling Restart)
     // =========================================
     async restartDeployment(name, namespace) {
-        if (!name || typeof name !== "string") {
-            throw new Error("Invalid deployment name provided for restartDeployment");
+        if (!name || typeof name !== "string" || !name.trim()) {
+            const err = new Error("Invalid deployment name provided for restartDeployment");
+            err.statusCode = 400;
+            throw err;
         }
         if (!this.checkConnection()) {
-            throw new Error("Kubernetes client is not initialized");
+            const err = new Error("Kubernetes client is not initialized or cluster is unreachable");
+            err.statusCode = 503;
+            throw err;
         }
 
-        const ns = namespace || this.getDefaultNamespace();
-        console.log(`☸️ Triggering rolling restart for deployment "${name}" in namespace "${ns}"`);
+        const trimmedName = name.trim();
+        const ns = (namespace || this.getDefaultNamespace()).trim();
+        console.log(`☸️ Triggering rolling restart for deployment "${trimmedName}" in namespace "${ns}"`);
 
-        const currentDepState = await this.getDeployment(name, ns);
+        const currentDepState = await this.getDeployment(trimmedName, ns);
         const dep = currentDepState.raw;
+        const initialGeneration = dep.metadata?.generation ?? 1;
+        const desiredReplicas = dep.spec?.replicas ?? 1;
         const existingAnnotations = dep.spec?.template?.metadata?.annotations || {};
         const hasAnnotations = Boolean(dep.spec?.template?.metadata?.annotations);
         const restartedAt = new Date().toISOString();
@@ -637,23 +738,48 @@ class KubernetesService {
             }
         ];
 
-        await this.appsApi.patchNamespacedDeployment({
-            name,
-            namespace: ns,
-            body: patch
-        });
+        try {
+            await this.appsApi.patchNamespacedDeployment({
+                name: trimmedName,
+                namespace: ns,
+                body: patch
+            });
+        } catch (err) {
+            const status = this.extractStatusCode(err) || 500;
+            const message = this.extractErrorMessage(err) || this.sanitizeError(err);
+            const customErr = new Error(`Failed to trigger rolling restart for "${trimmedName}": ${message}`);
+            customErr.statusCode = status;
+            throw customErr;
+        }
 
         // Verify pod rollout and convergence
-        const convergence = await this.waitForRestartConvergence(name, ns, restartedAt, 25000, 1500);
+        const convergence = await this.waitForRestartConvergence(trimmedName, ns, initialGeneration, desiredReplicas, 35000, 1500);
+
+        if (!convergence.converged) {
+            return {
+                success: false,
+                converged: false,
+                statusCode: 504,
+                deployment: trimmedName,
+                namespace: ns,
+                restartedAt,
+                readyReplicas: convergence.readyReplicas,
+                availableReplicas: convergence.availableReplicas,
+                desiredReplicas,
+                message: `Rolling restart initiated for "${trimmedName}", but rollout verification timed out (${convergence.readyReplicas}/${desiredReplicas} ready)`
+            };
+        }
 
         return {
             success: true,
-            deployment: name,
+            converged: true,
+            deployment: trimmedName,
             namespace: ns,
             restartedAt,
-            converged: convergence.converged,
             readyReplicas: convergence.readyReplicas,
-            message: `Rolling restart initiated for deployment "${name}" in namespace "${ns}" (rollout converged: ${convergence.converged})`
+            availableReplicas: convergence.availableReplicas,
+            desiredReplicas,
+            message: `Rolling restart completed successfully for deployment "${trimmedName}" in namespace "${ns}" (${convergence.readyReplicas}/${desiredReplicas} ready)`
         };
     }
 
@@ -680,12 +806,17 @@ class KubernetesService {
         while (Date.now() - startTime < maxWaitMs) {
             try {
                 const status = await this.getDeployment(name, ns);
-                if (status.ready === expectedReplicas && status.available === expectedReplicas) {
+                const updatedSatisfied = status.updated === undefined || status.updated === expectedReplicas;
+                const availableSatisfied = status.available === undefined || status.available === expectedReplicas;
+                if (status.desired === expectedReplicas &&
+                    status.ready === expectedReplicas &&
+                    availableSatisfied &&
+                    updatedSatisfied) {
                     console.log(`✅ Deployment "${name}" converged: ${status.ready}/${expectedReplicas} replicas ready.`);
                     return {
                         converged: true,
                         readyReplicas: status.ready,
-                        availableReplicas: status.available,
+                        availableReplicas: status.available ?? status.ready,
                         desiredReplicas: expectedReplicas,
                         elapsedMs: Date.now() - startTime
                     };
@@ -697,11 +828,12 @@ class KubernetesService {
             await new Promise((r) => setTimeout(r, pollIntervalMs));
         }
 
-        const finalStatus = await this.getDeployment(name, ns).catch(() => ({ ready: 0, available: 0 }));
+        const finalStatus = await this.getDeployment(name, ns).catch(() => ({ ready: 0, available: 0, desired: expectedReplicas }));
+        const isConverged = finalStatus.ready === expectedReplicas && (finalStatus.available === undefined || finalStatus.available === expectedReplicas);
         return {
-            converged: finalStatus.ready === expectedReplicas,
+            converged: isConverged,
             readyReplicas: finalStatus.ready,
-            availableReplicas: finalStatus.available,
+            availableReplicas: finalStatus.available ?? finalStatus.ready,
             desiredReplicas: expectedReplicas,
             elapsedMs: Date.now() - startTime
         };
@@ -710,7 +842,7 @@ class KubernetesService {
     // =========================================
     // CONVERGENCE VERIFICATION FOR RESTART
     // =========================================
-    async waitForRestartConvergence(name, namespace, restartedAt, maxWaitMs = 30000, pollIntervalMs = 1500) {
+    async waitForRestartConvergence(name, namespace, initialGeneration, desiredReplicas, maxWaitMs = 35000, pollIntervalMs = 1500) {
         const ns = namespace || this.getDefaultNamespace();
         const startTime = Date.now();
 
@@ -718,26 +850,42 @@ class KubernetesService {
             return {
                 converged: false,
                 readyReplicas: 0,
-                desiredReplicas: 0,
+                availableReplicas: 0,
+                desiredReplicas,
                 elapsedMs: 0,
                 message: "Kubernetes client not initialized"
             };
         }
 
-        console.log(`⏳ Waiting for deployment "${name}" rolling restart rollout to complete...`);
+        console.log(`⏳ Waiting for deployment "${name}" rolling restart rollout to complete (initial gen: ${initialGeneration})...`);
 
         // Give deployment controller a moment to start cycling pods
         await new Promise((r) => setTimeout(r, 2000));
 
         while (Date.now() - startTime < maxWaitMs) {
             try {
-                const status = await this.getDeployment(name, ns);
-                if (status.desired > 0 && status.ready === status.desired && status.available === status.desired) {
-                    console.log(`✅ Deployment "${name}" restart rollout completed: ${status.ready}/${status.desired} ready.`);
+                const depState = await this.getDeployment(name, ns);
+                const dep = depState.raw;
+                const observedGen = dep?.status?.observedGeneration;
+                const currentGen = dep?.metadata?.generation ?? (initialGeneration + 1);
+                const updatedReplicas = dep?.status?.updatedReplicas;
+                const readyReplicas = dep?.status?.readyReplicas ?? depState.ready ?? 0;
+                const availableReplicas = dep?.status?.availableReplicas ?? depState.available ?? readyReplicas;
+                const replicas = dep?.spec?.replicas ?? depState.desired ?? desiredReplicas;
+
+                const genSatisfied = observedGen === undefined || observedGen >= currentGen;
+                const updatedSatisfied = updatedReplicas === undefined || updatedReplicas === replicas;
+                const readySatisfied = readyReplicas === replicas;
+                const availableSatisfied = dep?.status?.availableReplicas === undefined || availableReplicas === replicas;
+
+                if (genSatisfied && updatedSatisfied && readySatisfied && availableSatisfied) {
+                    console.log(`✅ Deployment "${name}" restart rollout completed: ${readyReplicas}/${replicas} ready.`);
                     return {
                         converged: true,
-                        readyReplicas: status.ready,
-                        desiredReplicas: status.desired,
+                        observedGeneration: observedGen ?? currentGen,
+                        readyReplicas,
+                        availableReplicas,
+                        desiredReplicas: replicas,
                         elapsedMs: Date.now() - startTime
                     };
                 }
@@ -748,10 +896,12 @@ class KubernetesService {
             await new Promise((r) => setTimeout(r, pollIntervalMs));
         }
 
-        const finalStatus = await this.getDeployment(name, ns).catch(() => ({ ready: 0, desired: 0 }));
+        const finalStatus = await this.getDeployment(name, ns).catch(() => ({ ready: 0, available: 0, desired: desiredReplicas }));
+        const isConverged = finalStatus.ready === finalStatus.desired && (finalStatus.available === undefined || finalStatus.available === finalStatus.desired);
         return {
-            converged: finalStatus.desired > 0 && finalStatus.ready === finalStatus.desired,
+            converged: isConverged,
             readyReplicas: finalStatus.ready,
+            availableReplicas: finalStatus.available ?? finalStatus.ready,
             desiredReplicas: finalStatus.desired,
             elapsedMs: Date.now() - startTime
         };

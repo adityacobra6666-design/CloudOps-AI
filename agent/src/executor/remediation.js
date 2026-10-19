@@ -221,14 +221,31 @@ class RemediationExecutor {
         }
     }
 
+    extractErrorMessage(error) {
+        if (!error) return null;
+        if (error.body) {
+            try {
+                const b = typeof error.body === "string" ? JSON.parse(error.body) : error.body;
+                if (b?.message) return b.message;
+            } catch (e) {}
+        }
+        return error.message || String(error);
+    }
+
     async executeScale(deploymentName, namespace, desiredReplicas) {
         const appsApi = this.k8sCollector.appsApi;
 
-        // Fetch current deployment state
-        const depRes = await appsApi.readNamespacedDeployment({
-            name: deploymentName,
-            namespace
-        });
+        // Fetch current deployment state (fail fast if deployment does not exist)
+        let depRes;
+        try {
+            depRes = await appsApi.readNamespacedDeployment({
+                name: deploymentName,
+                namespace
+            });
+        } catch (err) {
+            const msg = this.extractErrorMessage(err) || `Deployment "${deploymentName}" not found in namespace "${namespace}"`;
+            throw new Error(msg);
+        }
 
         const currentDeployment = depRes.body || depRes;
         const previousReplicas = currentDeployment.spec?.replicas || 0;
@@ -236,17 +253,23 @@ class RemediationExecutor {
         console.log(`📈 [AGENT EXEC] Scaling "${deploymentName}" from ${previousReplicas} to ${desiredReplicas} replicas`);
 
         // Patch deployment replicas via RFC 6902 JSON patch
-        await appsApi.patchNamespacedDeployment({
-            name: deploymentName,
-            namespace,
-            body: [
-                { op: "replace", path: "/spec/replicas", value: desiredReplicas }
-            ]
-        });
+        try {
+            await appsApi.patchNamespacedDeployment({
+                name: deploymentName,
+                namespace,
+                body: [
+                    { op: "replace", path: "/spec/replicas", value: desiredReplicas }
+                ]
+            });
+        } catch (err) {
+            const msg = this.extractErrorMessage(err) || `Failed to scale deployment "${deploymentName}": ${err.message}`;
+            throw new Error(msg);
+        }
 
-        // Wait up to 15 seconds for convergence
+        // Wait up to 25 seconds for convergence
         let readyReplicas = previousReplicas;
-        for (let i = 0; i < 8; i++) {
+        let availableReplicas = previousReplicas;
+        for (let i = 0; i < 12; i++) {
             await new Promise(r => setTimeout(r, 1500));
             try {
                 const checkRes = await appsApi.readNamespacedDeployment({
@@ -255,7 +278,13 @@ class RemediationExecutor {
                 });
                 const checkDep = checkRes.body || checkRes;
                 readyReplicas = checkDep.status?.readyReplicas || 0;
-                if (readyReplicas === desiredReplicas) break;
+                availableReplicas = checkDep.status?.availableReplicas ?? readyReplicas;
+                const updated = checkDep.status?.updatedReplicas;
+                const updatedSatisfied = updated === undefined || updated === desiredReplicas;
+                const availableSatisfied = checkDep.status?.availableReplicas === undefined || availableReplicas === desiredReplicas;
+                if (readyReplicas === desiredReplicas && availableSatisfied && updatedSatisfied) {
+                    break;
+                }
             } catch (e) {}
         }
 
@@ -267,7 +296,8 @@ class RemediationExecutor {
                 namespace,
                 previousReplicas,
                 newReplicas: desiredReplicas,
-                readyReplicas
+                readyReplicas,
+                availableReplicas
             }
         };
     }
@@ -277,11 +307,19 @@ class RemediationExecutor {
 
         console.log(`🔄 [AGENT EXEC] Triggering rolling restart for "${deploymentName}" in namespace "${namespace}"`);
 
-        const depRes = await appsApi.readNamespacedDeployment({
-            name: deploymentName,
-            namespace
-        });
+        let depRes;
+        try {
+            depRes = await appsApi.readNamespacedDeployment({
+                name: deploymentName,
+                namespace
+            });
+        } catch (err) {
+            const msg = this.extractErrorMessage(err) || `Deployment "${deploymentName}" not found in namespace "${namespace}"`;
+            throw new Error(msg);
+        }
+
         const currentDeployment = depRes.body || depRes;
+        const initialGeneration = currentDeployment.metadata?.generation || 1;
         const existingAnnotations = currentDeployment.spec?.template?.metadata?.annotations || {};
         const hasAnnotations = Boolean(currentDeployment.spec?.template?.metadata?.annotations);
         const restartedAt = new Date().toISOString();
@@ -297,17 +335,24 @@ class RemediationExecutor {
             }
         ];
 
-        await appsApi.patchNamespacedDeployment({
-            name: deploymentName,
-            namespace,
-            body: patch
-        });
+        try {
+            await appsApi.patchNamespacedDeployment({
+                name: deploymentName,
+                namespace,
+                body: patch
+            });
+        } catch (err) {
+            const msg = this.extractErrorMessage(err) || `Failed to restart deployment "${deploymentName}": ${err.message}`;
+            throw new Error(msg);
+        }
 
-        // Wait for rolling restart pod cycle
+        // Wait for rolling restart pod cycle and rollout completion
         await new Promise(r => setTimeout(r, 2000));
         let readyReplicas = 0;
+        let availableReplicas = 0;
         let desired = currentDeployment.spec?.replicas || 1;
-        for (let i = 0; i < 8; i++) {
+
+        for (let i = 0; i < 15; i++) {
             await new Promise(r => setTimeout(r, 1500));
             try {
                 const checkRes = await appsApi.readNamespacedDeployment({
@@ -315,9 +360,21 @@ class RemediationExecutor {
                     namespace
                 });
                 const checkDep = checkRes.body || checkRes;
+                const observedGen = checkDep.status?.observedGeneration;
+                const currentGen = checkDep.metadata?.generation ?? (initialGeneration + 1);
+                const updated = checkDep.status?.updatedReplicas;
                 readyReplicas = checkDep.status?.readyReplicas || 0;
+                availableReplicas = checkDep.status?.availableReplicas ?? readyReplicas;
                 desired = checkDep.spec?.replicas || desired;
-                if (readyReplicas === desired) break;
+
+                const genSatisfied = observedGen === undefined || observedGen >= currentGen;
+                const updatedSatisfied = updated === undefined || updated === desired;
+                const readySatisfied = readyReplicas === desired;
+                const availableSatisfied = checkDep.status?.availableReplicas === undefined || availableReplicas === desired;
+
+                if (genSatisfied && updatedSatisfied && readySatisfied && availableSatisfied) {
+                    break;
+                }
             } catch (e) {}
         }
 
@@ -329,6 +386,7 @@ class RemediationExecutor {
                 namespace,
                 restartedAt,
                 readyReplicas,
+                availableReplicas,
                 desiredReplicas: desired
             }
         };

@@ -45,7 +45,7 @@ const apiFetch = async (endpoint, options = {}) => {
     } catch (err) {
         clearTimeout(timeoutId);
         if (err.name === "AbortError") {
-            throw new Error("Request timed out after 60 seconds. Please try again.");
+            throw new Error("Request timed out after 60 seconds. Please try again.", { cause: err });
         }
         throw err;
     }
@@ -245,6 +245,28 @@ export const executeKubernetesAction = async (actionData) => {
         method: "POST",
         body: JSON.stringify(actionData)
     });
+};
+
+export const scaleKubernetesDeployment = async (name, data) => {
+    return apiFetch(`/kubernetes/deployments/${encodeURIComponent(name)}/scale`, {
+        method: "POST",
+        body: JSON.stringify(data)
+    });
+};
+
+export const restartKubernetesDeployment = async (name, data = {}) => {
+    return apiFetch(`/kubernetes/deployments/${encodeURIComponent(name)}/restart`, {
+        method: "POST",
+        body: JSON.stringify(data)
+    });
+};
+
+export const getKubernetesDeploymentStatus = async (name, namespace, connectionId) => {
+    const params = new URLSearchParams();
+    if (namespace) params.append("namespace", namespace);
+    if (connectionId) params.append("connectionId", connectionId);
+    const qs = params.toString();
+    return apiFetch(qs ? `/kubernetes/deployments/${encodeURIComponent(name)}/status?${qs}` : `/kubernetes/deployments/${encodeURIComponent(name)}/status`);
 };
 
 // =========================================

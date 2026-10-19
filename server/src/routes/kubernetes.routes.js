@@ -10,9 +10,14 @@ router.get("/health", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kuber
 router.get("/nodes", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kubernetesController.getKubernetesNodes);
 router.get("/pods", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kubernetesController.getKubernetesPods);
 router.get("/deployments", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kubernetesController.getKubernetesDeployments);
+router.get("/deployments/:name/status", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kubernetesController.getDeploymentStatus);
 router.get("/services", protect, requireRole("VIEWER", "ENGINEER", "ADMIN"), kubernetesController.getKubernetesServices);
 
-// Operational Kubernetes actions (scaling, restarts) require ENGINEER or ADMIN role
+// Specific deployment operations (scaling, rolling restarts) require ENGINEER or ADMIN role
+router.post("/deployments/:name/scale", protect, requireRole("ENGINEER", "ADMIN"), kubernetesController.scaleDeployment);
+router.post("/deployments/:name/restart", protect, requireRole("ENGINEER", "ADMIN"), kubernetesController.restartDeployment);
+
+// Operational Kubernetes actions (generic route) require ENGINEER or ADMIN role
 router.post("/action", protect, requireRole("ENGINEER", "ADMIN"), kubernetesController.executeKubernetesAction);
 
 // On-demand cluster refresh (read-only query dispatch)

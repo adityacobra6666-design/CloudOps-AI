@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
-import { getKubernetesOverview, executeKubernetesAction, getInfrastructureConnections } from "../services/api";
+import {
+    getKubernetesOverview,
+    scaleKubernetesDeployment,
+    restartKubernetesDeployment,
+    getInfrastructureConnections
+} from "../services/api";
 import Header from "../components/Header";
 import { ModalPortal } from "../components/Modal";
 
@@ -22,6 +27,8 @@ export default function KubernetesPage() {
     const [availableConnections, setAvailableConnections] = useState([]);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
+    const [operationalProgress, setOperationalProgress] = useState(null);
+    const [inProgressDeployments, setInProgressDeployments] = useState(new Set());
     const [errorMsg, setErrorMsg] = useState(null);
     const [successMsg, setSuccessMsg] = useState(null);
 
@@ -148,30 +155,29 @@ export default function KubernetesPage() {
     };
 
     const handleScaleSubmit = async (e) => {
-        e.preventDefault();
-        if (!targetDeployment) return;
+        if (e && e.preventDefault) e.preventDefault();
+        if (!targetDeployment || actionLoading) return;
+
+        const targetName = targetDeployment.name?.trim();
+        const targetNamespace = (targetDeployment.namespace || k8sData?.namespace || "cloudops").trim();
+        const numReplicas = Number(desiredReplicas);
+
+        if (desiredReplicas === "" || isNaN(numReplicas) || !Number.isInteger(numReplicas) || numReplicas < 1 || numReplicas > 10) {
+            setErrorMsg("Desired replicas must be an integer between 1 and 10 (no decimals or negative values).");
+            return;
+        }
 
         try {
             setActionLoading(true);
+            setOperationalProgress(`Scaling ${targetName} to ${numReplicas} replicas...`);
             setErrorMsg(null);
             setSuccessMsg(null);
+            setInProgressDeployments(prev => new Set(prev).add(targetName));
 
             const effectiveConnectionId = getEffectiveConnectionId();
-            const targetName = targetDeployment.name?.trim();
-            const targetNamespace = (targetDeployment.namespace || k8sData?.namespace || "cloudops").trim();
-            const numReplicas = parseInt(desiredReplicas, 10);
-
-            if (isNaN(numReplicas) || numReplicas < 1 || numReplicas > 10) {
-                setErrorMsg(`Desired replicas must be an integer between 1 and 10.`);
-                setActionLoading(false);
-                return;
-            }
-
             const payload = {
-                action: "SCALE_SERVICE",
-                target: targetName,
-                namespace: targetNamespace,
                 replicas: numReplicas,
+                namespace: targetNamespace,
                 reason: `Manual scaling via UI to ${numReplicas} replicas`
             };
 
@@ -179,12 +185,20 @@ export default function KubernetesPage() {
                 payload.connectionId = effectiveConnectionId;
             }
 
-            const res = await executeKubernetesAction(payload);
+            setOperationalProgress(`Submitting scale request to Kubernetes API...`);
+            const res = await scaleKubernetesDeployment(targetName, payload);
 
             if (res.success) {
-                setSuccessMsg(res.message || `Successfully scaled ${targetName} to ${numReplicas} replicas.`);
+                const ready = res.readyReplicas ?? res.newReplicas ?? numReplicas;
+                const total = res.newReplicas ?? numReplicas;
+                setSuccessMsg(res.message || `Successfully scaled ${targetName} to ${total} replicas (${ready}/${total} ready).`);
                 setScaleModalOpen(false);
+                setOperationalProgress(null);
+
+                // Refresh immediately, and schedule follow-up refreshes to capture pod lifecycle convergence
                 fetchK8s(effectiveConnectionId || selectedEnvironment);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 2500);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 5000);
             } else {
                 setErrorMsg(res.message || "Scale action failed or was rejected.");
             }
@@ -192,38 +206,56 @@ export default function KubernetesPage() {
             setErrorMsg(err.message || "Scale action failed");
         } finally {
             setActionLoading(false);
+            setOperationalProgress(null);
+            setInProgressDeployments(prev => {
+                const next = new Set(prev);
+                next.delete(targetName);
+                return next;
+            });
         }
     };
 
     const handleRestartSubmit = async () => {
-        if (!targetDeployment) return;
+        if (!targetDeployment || actionLoading) return;
+        const targetName = targetDeployment.name?.trim();
+        const targetNamespace = (targetDeployment.namespace || k8sData?.namespace || "cloudops").trim();
+
+        if (inProgressDeployments.has(targetName)) {
+            setErrorMsg(`An operation is already in progress for deployment "${targetName}". Please wait for it to complete.`);
+            return;
+        }
 
         try {
             setActionLoading(true);
+            setOperationalProgress(`Triggering rolling restart for ${targetName}...`);
             setErrorMsg(null);
             setSuccessMsg(null);
+            setInProgressDeployments(prev => new Set(prev).add(targetName));
 
             const effectiveConnectionId = getEffectiveConnectionId();
-            const targetName = targetDeployment.name?.trim();
-            const targetNamespace = (targetDeployment.namespace || k8sData?.namespace || "cloudops").trim();
-
             const payload = {
-                action: "RESTART_SERVICE",
-                target: targetName,
                 namespace: targetNamespace,
-                reason: `Manual rolling restart via UI`
+                reason: "Manual rolling restart via CloudOps AI dashboard"
             };
 
             if (effectiveConnectionId) {
                 payload.connectionId = effectiveConnectionId;
             }
 
-            const res = await executeKubernetesAction(payload);
+            setOperationalProgress(`Updating pod template annotation and tracking rollout convergence...`);
+            const res = await restartKubernetesDeployment(targetName, payload);
 
             if (res.success) {
-                setSuccessMsg(res.message || `Rolling restart initiated for ${targetName}.`);
+                const ready = res.readyReplicas ?? targetDeployment.ready ?? 1;
+                const desired = res.desiredReplicas ?? targetDeployment.desired ?? ready;
+                setSuccessMsg(res.message || `Rolling restart completed successfully for ${targetName} (${ready}/${desired} pods ready).`);
                 setRestartModalOpen(false);
+                setOperationalProgress(null);
+
+                // Refresh immediately, then at 2.5s and 6s to display replaced pods in pod table
                 fetchK8s(effectiveConnectionId || selectedEnvironment);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 2500);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 6000);
             } else {
                 setErrorMsg(res.message || "Restart action failed or was rejected.");
             }
@@ -231,6 +263,12 @@ export default function KubernetesPage() {
             setErrorMsg(err.message || "Restart action failed");
         } finally {
             setActionLoading(false);
+            setOperationalProgress(null);
+            setInProgressDeployments(prev => {
+                const next = new Set(prev);
+                next.delete(targetName);
+                return next;
+            });
         }
     };
 
@@ -255,7 +293,7 @@ export default function KubernetesPage() {
                             <option value="local">💻 Direct Local Host (Docker Fallback)</option>
                         )}
                         {availableConnections.map((c) => {
-                            let stateLabel = "Checking...";
+                            let stateLabel;
                             if (c.status === "REVOKED") {
                                 stateLabel = "Revoked";
                             } else if (c.status !== "CONNECTED") {
@@ -654,14 +692,25 @@ export default function KubernetesPage() {
                                                     <td>
                                                         {(() => {
                                                             const isStateful = dep.name === "cloudops-mongodb" || dep.name?.includes("mongo") || dep.name?.includes("db");
-                                                            const scaleDisabled = actionLoading || !isAuthorized || !isConnectionAvailable || isStateful;
+                                                            const isOperationRunning = inProgressDeployments.has(dep.name);
+                                                            const scaleDisabled = actionLoading || isOperationRunning || !isAuthorized || !isConnectionAvailable || isStateful;
+                                                            const restartDisabled = actionLoading || isOperationRunning || !isAuthorized || !isConnectionAvailable;
                                                             const scaleTitle = !isAuthorized
                                                                 ? "Remediation execution requires ENGINEER or ADMIN role"
                                                                 : (!isConnectionAvailable
                                                                     ? "Cluster connection unavailable"
-                                                                    : (isStateful
-                                                                        ? "Scaling is disabled for stateful database singleton. Use Restart Service for recovery."
-                                                                        : "Scale this deployment"));
+                                                                    : (isOperationRunning
+                                                                        ? `Kubernetes operation currently in progress for ${dep.name}`
+                                                                        : (isStateful
+                                                                            ? "Scaling is disabled for stateful database singleton. Use Restart Service for recovery."
+                                                                            : "Scale this deployment")));
+                                                            const restartTitle = !isAuthorized
+                                                                ? "Remediation execution requires ENGINEER or ADMIN role"
+                                                                : (!isConnectionAvailable
+                                                                    ? "Cluster connection unavailable"
+                                                                    : (isOperationRunning
+                                                                        ? `Kubernetes operation currently in progress for ${dep.name}`
+                                                                        : "Trigger rolling restart"));
 
                                                             return (
                                                                 <div className="action-button-group" style={{ display: "flex", gap: "6px" }}>
@@ -678,19 +727,19 @@ export default function KubernetesPage() {
                                                                             setScaleModalOpen(true);
                                                                         }}
                                                                     >
-                                                                        ⚡ Scale
+                                                                        {isOperationRunning ? <span className="btn-spinner" style={{ width: "12px", height: "12px" }} /> : "⚡"} Scale
                                                                     </button>
                                                                     <button
                                                                         className="btn btn-outline btn-sm"
-                                                                        disabled={actionLoading || !isAuthorized || !isConnectionAvailable}
-                                                                        title={!isAuthorized ? "Remediation execution requires ENGINEER or ADMIN role" : (!isConnectionAvailable ? "Cluster connection unavailable" : "Trigger rolling restart")}
+                                                                        disabled={restartDisabled}
+                                                                        title={restartTitle}
                                                                         onClick={() => {
                                                                             setTargetDeployment(dep);
                                                                             setErrorMsg(null);
                                                                             setRestartModalOpen(true);
                                                                         }}
                                                                     >
-                                                                        🔄 Restart
+                                                                        {isOperationRunning ? <span className="btn-spinner" style={{ width: "12px", height: "12px" }} /> : "🔄"} Restart
                                                                     </button>
                                                                 </div>
                                                             );
@@ -845,151 +894,302 @@ export default function KubernetesPage() {
             )}
 
             {/* SCALE MODAL */}
-            {scaleModalOpen && targetDeployment && (
-                <ModalPortal isOpen={scaleModalOpen} onClose={() => !actionLoading && setScaleModalOpen(false)}>
-                    <div
-                        className="modal-backdrop"
-                        onClick={() => !actionLoading && setScaleModalOpen(false)}
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="scale-modal-title"
-                    >
-                        <div className="modal-content" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
-                            <div className="modal-header">
-                                <div className="modal-title-wrap">
-                                    <h3 id="scale-modal-title" className="modal-title">Scale {targetDeployment.name}</h3>
-                                    <p className="modal-subtitle">
-                                        Current replicas: <strong>{targetDeployment.ready ?? targetDeployment.readyReplicas ?? targetDeployment.desired ?? targetDeployment.replicas ?? 1}</strong>
-                                    </p>
+            {scaleModalOpen && targetDeployment && (() => {
+                const currentReplicas = Number(targetDeployment.ready ?? targetDeployment.readyReplicas ?? targetDeployment.desired ?? targetDeployment.replicas ?? 1);
+                const desiredVal = parseInt(desiredReplicas, 10);
+                const isValid = !isNaN(desiredVal) && desiredVal >= 1 && desiredVal <= 10 && Number.isInteger(Number(desiredReplicas));
+                const delta = isValid ? (desiredVal - currentReplicas) : 0;
+
+                return (
+                    <ModalPortal isOpen={scaleModalOpen} onClose={() => !actionLoading && setScaleModalOpen(false)}>
+                        <div
+                            className="modal-backdrop"
+                            onClick={() => !actionLoading && setScaleModalOpen(false)}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="scale-modal-title"
+                        >
+                            <div className="modal-content" style={{ maxWidth: "480px" }} onClick={(e) => e.stopPropagation()}>
+                                <div className="modal-header">
+                                    <div className="modal-title-wrap">
+                                        <h3 id="scale-modal-title" className="modal-title">Scale Deployment</h3>
+                                        <p className="modal-subtitle">
+                                            Target: <code style={{ color: "#38bdf8", fontWeight: 600 }}>{targetDeployment.name}</code> &bull; Namespace: <code>{targetDeployment.namespace || k8sData?.namespace || "cloudops"}</code>
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="modal-close-btn"
+                                        onClick={() => setScaleModalOpen(false)}
+                                        disabled={actionLoading}
+                                        aria-label="Close dialog"
+                                    >
+                                        ✕
+                                    </button>
                                 </div>
-                                <button
-                                    type="button"
-                                    className="modal-close-btn"
-                                    onClick={() => setScaleModalOpen(false)}
-                                    disabled={actionLoading}
-                                    aria-label="Close dialog"
-                                >
-                                    ✕
-                                </button>
+                                <form onSubmit={handleScaleSubmit}>
+                                    <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                                        {errorMsg && (
+                                            <div className="alert-banner error" style={{ margin: 0 }}>
+                                                <span>⚠️ {errorMsg}</span>
+                                            </div>
+                                        )}
+
+                                        {/* Active operation progress banner */}
+                                        {actionLoading && operationalProgress && (
+                                            <div className="alert-banner info" style={{ margin: 0, display: "flex", alignItems: "center", gap: "10px" }}>
+                                                <span className="btn-spinner" style={{ width: "16px", height: "16px" }} />
+                                                <span style={{ fontSize: "0.85rem", lineHeight: 1.4 }}>{operationalProgress}</span>
+                                            </div>
+                                        )}
+
+                                        {/* Replica Change Preview Box */}
+                                        <div style={{
+                                            background: "rgba(15, 23, 42, 0.65)",
+                                            border: "1px solid var(--border-color)",
+                                            borderRadius: "8px",
+                                            padding: "14px 16px",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between"
+                                        }}>
+                                            <div>
+                                                <div style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--color-text-muted)" }}>Current</div>
+                                                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--color-text-main)" }}>
+                                                    {currentReplicas}
+                                                </div>
+                                                <div style={{ fontSize: "0.72rem", color: "var(--color-text-muted)" }}>
+                                                    {targetDeployment.ready ?? targetDeployment.readyReplicas ?? currentReplicas} Ready
+                                                </div>
+                                            </div>
+
+                                            <div style={{ fontSize: "1.4rem", color: "var(--color-text-muted)", padding: "0 8px" }}>
+                                                ➔
+                                            </div>
+
+                                            <div>
+                                                <div style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--color-text-muted)" }}>Desired</div>
+                                                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: isValid ? "#38bdf8" : "#f87171" }}>
+                                                    {isValid ? desiredVal : "--"}
+                                                </div>
+                                                <div style={{ fontSize: "0.72rem", color: "var(--color-text-muted)" }}>
+                                                    Policy: 1 - 10
+                                                </div>
+                                            </div>
+
+                                            <div style={{ textAlign: "right" }}>
+                                                <div style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--color-text-muted)" }}>Change</div>
+                                                <span className={`status-pill compact-pill ${delta > 0 ? "success" : delta < 0 ? "warning" : "neutral"}`} style={{ fontSize: "0.82rem", fontWeight: 600, padding: "4px 8px" }}>
+                                                    {delta > 0 ? `+${delta} (Scale Out)` : delta < 0 ? `${delta} (Scale In)` : "No Change"}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        {/* Stepper & Input Controls */}
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                                                <span>Desired Replicas (1 - 10):</span>
+                                                <span style={{ fontSize: "0.78rem", color: "var(--color-text-muted)" }}>Whole numbers only</span>
+                                            </label>
+
+                                            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px" }}>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-secondary"
+                                                    style={{ width: "38px", height: "38px", padding: 0, fontSize: "1.1rem", fontWeight: 700 }}
+                                                    disabled={actionLoading || desiredVal <= 1}
+                                                    onClick={() => setDesiredReplicas(Math.max(1, (desiredVal || currentReplicas) - 1))}
+                                                >
+                                                    -
+                                                </button>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max="10"
+                                                    step="1"
+                                                    value={desiredReplicas}
+                                                    onChange={(e) => setDesiredReplicas(e.target.value)}
+                                                    className="form-input"
+                                                    style={{ textAlign: "center", fontSize: "1.1rem", fontWeight: 700, height: "38px" }}
+                                                    required
+                                                    disabled={actionLoading}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-secondary"
+                                                    style={{ width: "38px", height: "38px", padding: 0, fontSize: "1.1rem", fontWeight: 700 }}
+                                                    disabled={actionLoading || desiredVal >= 10}
+                                                    onClick={() => setDesiredReplicas(Math.min(10, (desiredVal || currentReplicas) + 1))}
+                                                >
+                                                    +
+                                                </button>
+                                            </div>
+
+                                            {/* Preset Chips */}
+                                            <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                                                <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", marginRight: "4px" }}>Presets:</span>
+                                                {[1, 2, 4, 6, 8, 10].map((preset) => (
+                                                    <button
+                                                        key={preset}
+                                                        type="button"
+                                                        className={`btn btn-xs ${desiredVal === preset ? "btn-primary" : "btn-secondary"}`}
+                                                        style={{ minWidth: "28px", padding: "2px 8px" }}
+                                                        disabled={actionLoading}
+                                                        onClick={() => setDesiredReplicas(preset)}
+                                                    >
+                                                        {preset}
+                                                    </button>
+                                                ))}
+                                            </div>
+
+                                            {!isValid && desiredReplicas !== "" && (
+                                                <div style={{ color: "#f87171", fontSize: "0.78rem", marginTop: "6px" }}>
+                                                    ⚠️ Replicas must be a whole number between 1 and 10 (no decimals or negative values).
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div style={{ fontSize: "0.78rem", color: "var(--color-text-muted)", lineHeight: 1.4 }}>
+                                            ℹ️ Submitting this request patches the Kubernetes deployment spec directly. Telemetry will automatically refresh after rollout convergence.
+                                        </div>
+                                    </div>
+                                    <div className="modal-footer">
+                                        <button
+                                            type="button"
+                                            className="btn btn-secondary"
+                                            onClick={() => setScaleModalOpen(false)}
+                                            disabled={actionLoading}
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            className="btn btn-primary"
+                                            disabled={actionLoading || !isValid || delta === 0}
+                                        >
+                                            {actionLoading ? (
+                                                <>
+                                                    <span className="btn-spinner" />
+                                                    Applying Scale...
+                                                </>
+                                            ) : (
+                                                `Confirm Scale to ${isValid ? desiredVal : ""} Pods`
+                                            )}
+                                        </button>
+                                    </div>
+                                </form>
                             </div>
-                            <form onSubmit={handleScaleSubmit}>
-                                <div className="modal-body">
+                        </div>
+                    </ModalPortal>
+                );
+            })()}
+
+            {/* RESTART MODAL */}
+            {restartModalOpen && targetDeployment && (() => {
+                const activePods = targetDeployment.ready ?? targetDeployment.readyReplicas ?? targetDeployment.desired ?? targetDeployment.replicas ?? 1;
+
+                return (
+                    <ModalPortal isOpen={restartModalOpen} onClose={() => !actionLoading && setRestartModalOpen(false)}>
+                        <div
+                            className="modal-backdrop"
+                            onClick={() => !actionLoading && setRestartModalOpen(false)}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="restart-modal-title"
+                        >
+                            <div className="modal-content" style={{ maxWidth: "480px" }} onClick={(e) => e.stopPropagation()}>
+                                <div className="modal-header">
+                                    <div className="modal-title-wrap">
+                                        <h3 id="restart-modal-title" className="modal-title">Trigger Rolling Restart</h3>
+                                        <p className="modal-subtitle">
+                                            Target: <code style={{ color: "#38bdf8", fontWeight: 600 }}>{targetDeployment.name}</code> &bull; Namespace: <code>{targetDeployment.namespace || k8sData?.namespace || "cloudops"}</code>
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="modal-close-btn"
+                                        onClick={() => setRestartModalOpen(false)}
+                                        disabled={actionLoading}
+                                        aria-label="Close dialog"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                                <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                                     {errorMsg && (
-                                        <div className="alert-banner error" style={{ marginBottom: "12px" }}>
+                                        <div className="alert-banner error" style={{ margin: 0 }}>
                                             <span>⚠️ {errorMsg}</span>
                                         </div>
                                     )}
-                                    <div className="form-group" style={{ marginBottom: 0 }}>
-                                        <label className="form-label">Desired replicas:</label>
-                                        <input
-                                            type="number"
-                                            min="1"
-                                            max="10"
-                                            value={desiredReplicas}
-                                            onChange={(e) => setDesiredReplicas(e.target.value)}
-                                            className="form-input"
-                                            required
-                                            disabled={actionLoading}
-                                        />
+
+                                    {actionLoading && operationalProgress && (
+                                        <div className="alert-banner info" style={{ margin: 0, display: "flex", alignItems: "center", gap: "10px" }}>
+                                            <span className="btn-spinner" style={{ width: "16px", height: "16px" }} />
+                                            <span style={{ fontSize: "0.85rem", lineHeight: 1.4 }}>{operationalProgress}</span>
+                                        </div>
+                                    )}
+
+                                    <div style={{
+                                        background: "rgba(15, 23, 42, 0.65)",
+                                        border: "1px solid var(--border-color)",
+                                        borderRadius: "8px",
+                                        padding: "14px 16px"
+                                    }}>
+                                        <div style={{ fontWeight: 600, color: "var(--color-text-main)", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+                                            <span>🔄 Rolling Update Mechanics</span>
+                                        </div>
+                                        <p style={{ margin: 0, color: "var(--color-text-muted)", fontSize: "0.82rem", lineHeight: 1.5 }}>
+                                            This will update the deployment's pod template annotation (<code>kubectl.kubernetes.io/restartedAt</code>).
+                                            Kubernetes will roll out replacement pods sequentially according to your rolling update strategy without downtime.
+                                        </p>
                                     </div>
+
+                                    <div style={{
+                                        background: "rgba(245, 158, 11, 0.08)",
+                                        border: "1px solid rgba(245, 158, 11, 0.25)",
+                                        borderRadius: "8px",
+                                        padding: "12px 14px",
+                                        fontSize: "0.82rem",
+                                        color: "#fcd34d",
+                                        lineHeight: 1.4
+                                    }}>
+                                        <strong>Notice:</strong> All <strong>{activePods}</strong> active pod(s) will be replaced incrementally. Existing pods will only be terminated as newly scheduled replacement pods become Ready.
+                                    </div>
+
+                                    <p style={{ margin: 0, color: "var(--color-text-main)", fontSize: "0.85rem", fontWeight: 500 }}>
+                                        Are you sure you want to initiate a rolling restart for <code>{targetDeployment.name}</code>?
+                                    </p>
                                 </div>
                                 <div className="modal-footer">
                                     <button
                                         type="button"
                                         className="btn btn-secondary"
-                                        onClick={() => setScaleModalOpen(false)}
+                                        onClick={() => setRestartModalOpen(false)}
                                         disabled={actionLoading}
                                     >
                                         Cancel
                                     </button>
                                     <button
-                                        type="submit"
-                                        className="btn btn-primary"
+                                        type="button"
+                                        className="btn btn-danger"
                                         disabled={actionLoading}
+                                        onClick={handleRestartSubmit}
                                     >
                                         {actionLoading ? (
                                             <>
                                                 <span className="btn-spinner" />
-                                                Scaling...
+                                                Restarting...
                                             </>
                                         ) : (
-                                            "Confirm Scale"
+                                            "Confirm Rolling Restart"
                                         )}
                                     </button>
                                 </div>
-                            </form>
-                        </div>
-                    </div>
-                </ModalPortal>
-            )}
-
-            {/* RESTART MODAL */}
-            {restartModalOpen && targetDeployment && (
-                <ModalPortal isOpen={restartModalOpen} onClose={() => !actionLoading && setRestartModalOpen(false)}>
-                    <div
-                        className="modal-backdrop"
-                        onClick={() => !actionLoading && setRestartModalOpen(false)}
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="restart-modal-title"
-                    >
-                        <div className="modal-content" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
-                            <div className="modal-header">
-                                <div className="modal-title-wrap">
-                                    <h3 id="restart-modal-title" className="modal-title">Restart {targetDeployment.name}?</h3>
-                                    <p className="modal-subtitle">
-                                        Namespace: <code>{targetDeployment.namespace || k8sData?.namespace || "cloudops"}</code>
-                                    </p>
-                                </div>
-                                <button
-                                    type="button"
-                                    className="modal-close-btn"
-                                    onClick={() => setRestartModalOpen(false)}
-                                    disabled={actionLoading}
-                                    aria-label="Close dialog"
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                            <div className="modal-body">
-                                {errorMsg && (
-                                    <div className="alert-banner error" style={{ marginBottom: "12px" }}>
-                                        <span>⚠️ {errorMsg}</span>
-                                    </div>
-                                )}
-                                <p style={{ margin: 0, color: "var(--color-text-main)", fontSize: "0.88rem", lineHeight: 1.5 }}>
-                                    This action will restart the deployment pods.
-                                </p>
-                            </div>
-                            <div className="modal-footer">
-                                <button
-                                    type="button"
-                                    className="btn btn-secondary"
-                                    onClick={() => setRestartModalOpen(false)}
-                                    disabled={actionLoading}
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn btn-danger"
-                                    disabled={actionLoading}
-                                    onClick={handleRestartSubmit}
-                                >
-                                    {actionLoading ? (
-                                        <>
-                                            <span className="btn-spinner" />
-                                            Restarting...
-                                        </>
-                                    ) : (
-                                        "Restart"
-                                    )}
-                                </button>
                             </div>
                         </div>
-                    </div>
-                </ModalPortal>
-            )}
+                    </ModalPortal>
+                );
+            })()}
 
             {/* AUDIT DETAIL MODAL */}
             {selectedAuditDetail && (

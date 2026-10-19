@@ -230,19 +230,24 @@ class KubernetesExecutor extends RemediationExecutor {
 
         switch (action) {
             case "SCALE_SERVICE": {
-                const requestedReplicas = parseInt(context.replicas || context.desiredReplicas || 3, 10);
-                if (isNaN(requestedReplicas) || requestedReplicas < 1 || requestedReplicas > 10) {
-                    throw new Error(`Validation rejected: replicas (${requestedReplicas}) must be between 1 and 10.`);
+                const requestedReplicas = Number(context.replicas !== undefined ? context.replicas : context.desiredReplicas);
+                if (isNaN(requestedReplicas) || !Number.isInteger(requestedReplicas) || requestedReplicas < 1 || requestedReplicas > 10) {
+                    const err = new Error(`Validation rejected: replicas (${requestedReplicas}) must be an integer between 1 and 10.`);
+                    err.statusCode = 400;
+                    throw err;
                 }
 
                 const scaleResult = await kubernetesService.scaleDeployment(deploymentName, requestedReplicas, namespace);
                 return {
                     success: scaleResult.success && scaleResult.converged,
                     message: scaleResult.message,
+                    statusCode: scaleResult.converged ? 200 : (scaleResult.statusCode || 504),
                     executor: this.getName(),
                     previousReplicas: scaleResult.previousReplicas,
                     newReplicas: scaleResult.newReplicas,
                     readyReplicas: scaleResult.readyReplicas,
+                    availableReplicas: scaleResult.availableReplicas,
+                    converged: scaleResult.converged,
                     deploymentName,
                     namespace
                 };
@@ -253,9 +258,12 @@ class KubernetesExecutor extends RemediationExecutor {
                 return {
                     success: restartResult.success && restartResult.converged,
                     message: restartResult.message,
+                    statusCode: restartResult.converged ? 200 : (restartResult.statusCode || 504),
                     executor: this.getName(),
                     restartedAt: restartResult.restartedAt,
                     readyReplicas: restartResult.readyReplicas,
+                    availableReplicas: restartResult.availableReplicas,
+                    converged: restartResult.converged,
                     deploymentName,
                     namespace
                 };
@@ -299,16 +307,22 @@ class AgentRemediationExecutor extends RemediationExecutor {
         }
 
         if (!connection) {
-            throw new Error(`Connected infrastructure environment "${connectionId}" not found.`);
+            const err = new Error(`Connected infrastructure environment "${connectionId}" not found.`);
+            err.statusCode = 404;
+            throw err;
         }
 
         if (connection.status === "REVOKED" || !connection.enabled) {
-            throw new Error(`Connected environment "${connection.name}" is revoked or disabled. Command rejected.`);
+            const err = new Error(`Connected environment "${connection.name}" is revoked or disabled. Command rejected.`);
+            err.statusCode = 403;
+            throw err;
         }
 
         // Validate action
         if (!["SCALE_SERVICE", "RESTART_SERVICE"].includes(action)) {
-            throw new Error(`Agent-side rejected: Action "${action}" not allowed.`);
+            const err = new Error(`Agent-side rejected: Action "${action}" not allowed.`);
+            err.statusCode = 400;
+            throw err;
         }
 
         // Extract and validate target
@@ -316,27 +330,50 @@ class AgentRemediationExecutor extends RemediationExecutor {
         const namespace = (typeof target === "object" && target !== null && target.namespace ? target.namespace : (context.namespace || "cloudops"))?.trim();
 
         if (!deploymentName) {
-            throw new Error("Validation rejected: Target deployment name is required.");
+            const err = new Error("Validation rejected: Target deployment name is required.");
+            err.statusCode = 400;
+            throw err;
         }
         if (!namespace) {
-            throw new Error("Validation rejected: Target namespace is required.");
+            const err = new Error("Validation rejected: Target namespace is required.");
+            err.statusCode = 400;
+            throw err;
         }
 
         const isAllowedTarget = KUBERNETES_CONFIG.allowedDeployments.includes(deploymentName) || Boolean(ALLOWED_TARGETS[deploymentName]);
         if (!isAllowedTarget) {
-            throw new Error(`Rejected: Target "${deploymentName}" is not in allowed deployments whitelist.`);
+            const err = new Error(`Rejected: Target "${deploymentName}" is not in allowed deployments whitelist.`);
+            err.statusCode = 403;
+            throw err;
         }
 
         const isAllowedNs = KUBERNETES_CONFIG.allowedNamespaces.includes(namespace);
         if (!isAllowedNs) {
-            throw new Error(`Rejected: Namespace "${namespace}" is not in allowed namespaces whitelist.`);
+            const err = new Error(`Rejected: Namespace "${namespace}" is not in allowed namespaces whitelist.`);
+            err.statusCode = 403;
+            throw err;
+        }
+
+        // Prevent duplicate concurrent command submissions for the same deployment
+        const activeCommand = await AgentCommand.findOne({
+            connectionId: connection._id,
+            "target.name": deploymentName,
+            status: { $in: ["PENDING", "RUNNING"] },
+            expiresAt: { $gt: new Date() }
+        });
+        if (activeCommand) {
+            const err = new Error(`An operation (${activeCommand.action}) is already in progress for deployment "${deploymentName}". Please wait for the current operation to complete.`);
+            err.statusCode = 409;
+            throw err;
         }
 
         let parameters = {};
         if (action === "SCALE_SERVICE") {
-            const numReplicas = parseInt(context.replicas || context.desiredReplicas || 3, 10);
-            if (isNaN(numReplicas) || numReplicas < 1 || numReplicas > 10) {
-                throw new Error(`Validation rejected: replicas (${numReplicas}) must be between 1 and 10.`);
+            const numReplicas = Number(context.replicas !== undefined ? context.replicas : context.desiredReplicas);
+            if (isNaN(numReplicas) || !Number.isInteger(numReplicas) || numReplicas < 1 || numReplicas > 10) {
+                const err = new Error(`Validation rejected: replicas (${numReplicas}) must be an integer between 1 and 10.`);
+                err.statusCode = 400;
+                throw err;
             }
             parameters = { replicas: numReplicas };
         }
@@ -376,6 +413,7 @@ class AgentRemediationExecutor extends RemediationExecutor {
                 return {
                     success: true,
                     message: updated.result?.message || `Command ${action} executed successfully by agent`,
+                    statusCode: 200,
                     executor: this.getName(),
                     commandId,
                     deploymentName,
@@ -384,14 +422,24 @@ class AgentRemediationExecutor extends RemediationExecutor {
                     newReplicas: updated.result?.resultingState?.newReplicas || parameters.replicas,
                     restartedAt: updated.result?.resultingState?.restartedAt,
                     readyReplicas: updated.result?.resultingState?.readyReplicas,
+                    availableReplicas: updated.result?.resultingState?.availableReplicas ?? updated.result?.resultingState?.readyReplicas,
+                    converged: true,
                     agentId: connection.agentId
                 };
             }
 
             if (updated.status === "FAILED" || updated.status === "REJECTED") {
+                const errMsg = updated.error || updated.result?.message || `Remote agent reported ${updated.status}`;
+                const lower = errMsg.toLowerCase();
+                let statusCode = 500;
+                if (lower.includes("not found")) statusCode = 404;
+                else if (lower.includes("forbidden") || lower.includes("policy rejected") || lower.includes("rbac")) statusCode = 403;
+                else if (lower.includes("timed out")) statusCode = 504;
+
                 return {
                     success: false,
-                    message: updated.error || updated.result?.message || `Remote agent reported ${updated.status}`,
+                    statusCode,
+                    message: errMsg,
                     executor: this.getName(),
                     commandId,
                     agentId: connection.agentId
@@ -413,6 +461,7 @@ class AgentRemediationExecutor extends RemediationExecutor {
 
         return {
             success: false,
+            statusCode: 504,
             message: `Remote agent command timed out after ${Math.round(maxWaitMs / 1000)}s waiting for execution`,
             executor: this.getName(),
             commandId,
