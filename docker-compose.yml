@@ -79,9 +79,9 @@ services:
       GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-text-embedding-004}
 
       ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET:-}
-      GRAFANA_CLOUD_PROMETHEUS_URL: ${GRAFANA_CLOUD_PROMETHEUS_URL:-}
-      GRAFANA_CLOUD_PROMETHEUS_USERNAME: ${GRAFANA_CLOUD_PROMETHEUS_USERNAME:-}
-      GRAFANA_CLOUD_PROMETHEUS_TOKEN: ${GRAFANA_CLOUD_PROMETHEUS_TOKEN:-}
+      GRAFANA_CLOUD_PROMETHEUS_URL: ${GRAFANA_CLOUD_PROMETHEUS_URL:-${GRAFANA_CLOUD_REMOTE_WRITE_URL:-}}
+      GRAFANA_CLOUD_PROMETHEUS_USERNAME: ${GRAFANA_CLOUD_PROMETHEUS_USERNAME:-${GRAFANA_CLOUD_USER:-}}
+      GRAFANA_CLOUD_PROMETHEUS_TOKEN: ${GRAFANA_CLOUD_PROMETHEUS_TOKEN:-${GRAFANA_CLOUD_API_KEY:-}}
 
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
@@ -177,9 +177,9 @@ services:
       - "--storage.tsdb.retention.time=15d"
 
     environment:
-      GRAFANA_CLOUD_REMOTE_WRITE_URL: ${GRAFANA_CLOUD_REMOTE_WRITE_URL:-}
-      GRAFANA_CLOUD_USER: ${GRAFANA_CLOUD_USER:-}
-      GRAFANA_CLOUD_API_KEY: ${GRAFANA_CLOUD_API_KEY:-}
+      GRAFANA_CLOUD_REMOTE_WRITE_URL: ${GRAFANA_CLOUD_REMOTE_WRITE_URL:-${GRAFANA_CLOUD_PROMETHEUS_URL:-}}
+      GRAFANA_CLOUD_USER: ${GRAFANA_CLOUD_USER:-${GRAFANA_CLOUD_PROMETHEUS_USERNAME:-}}
+      GRAFANA_CLOUD_API_KEY: ${GRAFANA_CLOUD_API_KEY:-${GRAFANA_CLOUD_PROMETHEUS_TOKEN:-}}
 
     volumes:
       - ./monitoring/prometheus/entrypoint.sh:/etc/prometheus/entrypoint.sh:ro
@@ -194,6 +194,7 @@ services:
       - server
       - node-exporter
       - cadvisor
+      - alertmanager
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -221,6 +222,13 @@ services:
 
     ports:
       - "9093:9093"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

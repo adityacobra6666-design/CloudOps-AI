@@ -19,53 +19,57 @@ if grep -q '\${GRAFANA_CLOUD_' "$SOURCE_CONFIG"; then
     [ -z "${GRAFANA_CLOUD_API_KEY}" ] && MISSING="${MISSING} GRAFANA_CLOUD_API_KEY"
 
     if [ -n "$MISSING" ]; then
-        echo "ERROR [prometheus-init]: Missing required Grafana Cloud environment variable(s):${MISSING}" >&2
-        echo "ERROR [prometheus-init]: Please set these variables in your root .env file before starting Prometheus." >&2
-        exit 1
+        echo "INFO [prometheus-init]: Grafana Cloud credentials not configured or incomplete (missing:${MISSING})."
+        echo "INFO [prometheus-init]: Disabling remote_write and running Prometheus in local-only mode."
+        awk '
+        /^remote_write:/ { in_rw = 1; next }
+        in_rw && /^[a-zA-Z0-9_]+:/ { in_rw = 0 }
+        !in_rw { print $0 }
+        ' "$SOURCE_CONFIG" > "$GENERATED_CONFIG"
+    else
+        case "${GRAFANA_CLOUD_REMOTE_WRITE_URL}" in
+            http://*|https://*)
+                ;;
+            *)
+                echo "ERROR [prometheus-init]: GRAFANA_CLOUD_REMOTE_WRITE_URL must start with http:// or https://" >&2
+                exit 1
+                ;;
+        esac
+
+        # Normalize remote_write URL: if user passed Grafana Cloud base /api/prom, append /push
+        NORM_URL="${GRAFANA_CLOUD_REMOTE_WRITE_URL}"
+        case "$NORM_URL" in
+            */api/prom)
+                NORM_URL="${NORM_URL}/push"
+                ;;
+            */api/prom/)
+                NORM_URL="${NORM_URL}push"
+                ;;
+        esac
+
+        export NORM_GRAFANA_CLOUD_REMOTE_WRITE_URL="${NORM_URL}"
+
+        echo "INFO [prometheus-init]: Generating runtime configuration with Grafana Cloud remote_write..."
+        # Safe substitution using awk ENVIRON and literal substring replacement
+        # Avoids shell interpolation, regex escaping, and sed delimiter collision
+        awk '
+        {
+            target = "${GRAFANA_CLOUD_REMOTE_WRITE_URL}"
+            while ((idx = index($0, target)) > 0) {
+                $0 = substr($0, 1, idx - 1) ENVIRON["NORM_GRAFANA_CLOUD_REMOTE_WRITE_URL"] substr($0, idx + length(target))
+            }
+            target = "${GRAFANA_CLOUD_USER}"
+            while ((idx = index($0, target)) > 0) {
+                $0 = substr($0, 1, idx - 1) ENVIRON["GRAFANA_CLOUD_USER"] substr($0, idx + length(target))
+            }
+            target = "${GRAFANA_CLOUD_API_KEY}"
+            while ((idx = index($0, target)) > 0) {
+                $0 = substr($0, 1, idx - 1) ENVIRON["GRAFANA_CLOUD_API_KEY"] substr($0, idx + length(target))
+            }
+            print $0
+        }
+        ' "$SOURCE_CONFIG" > "$GENERATED_CONFIG"
     fi
-
-    case "${GRAFANA_CLOUD_REMOTE_WRITE_URL}" in
-        http://*|https://*)
-            ;;
-        *)
-            echo "ERROR [prometheus-init]: GRAFANA_CLOUD_REMOTE_WRITE_URL must start with http:// or https://" >&2
-            exit 1
-            ;;
-    esac
-
-    # Normalize remote_write URL: if user passed Grafana Cloud base /api/prom, append /push
-    NORM_URL="${GRAFANA_CLOUD_REMOTE_WRITE_URL}"
-    case "$NORM_URL" in
-        */api/prom)
-            NORM_URL="${NORM_URL}/push"
-            ;;
-        */api/prom/)
-            NORM_URL="${NORM_URL}push"
-            ;;
-    esac
-
-    export NORM_GRAFANA_CLOUD_REMOTE_WRITE_URL="${NORM_URL}"
-
-    echo "INFO [prometheus-init]: Generating runtime configuration from template..."
-    # Safe substitution using awk ENVIRON and literal substring replacement
-    # Avoids shell interpolation, regex escaping, and sed delimiter collision
-    awk '
-    {
-        target = "${GRAFANA_CLOUD_REMOTE_WRITE_URL}"
-        while ((idx = index($0, target)) > 0) {
-            $0 = substr($0, 1, idx - 1) ENVIRON["NORM_GRAFANA_CLOUD_REMOTE_WRITE_URL"] substr($0, idx + length(target))
-        }
-        target = "${GRAFANA_CLOUD_USER}"
-        while ((idx = index($0, target)) > 0) {
-            $0 = substr($0, 1, idx - 1) ENVIRON["GRAFANA_CLOUD_USER"] substr($0, idx + length(target))
-        }
-        target = "${GRAFANA_CLOUD_API_KEY}"
-        while ((idx = index($0, target)) > 0) {
-            $0 = substr($0, 1, idx - 1) ENVIRON["GRAFANA_CLOUD_API_KEY"] substr($0, idx + length(target))
-        }
-        print $0
-    }
-    ' "$SOURCE_CONFIG" > "$GENERATED_CONFIG"
 else
     echo "INFO [prometheus-init]: No Grafana Cloud placeholders found. Using base configuration..."
     cat "$SOURCE_CONFIG" > "$GENERATED_CONFIG"

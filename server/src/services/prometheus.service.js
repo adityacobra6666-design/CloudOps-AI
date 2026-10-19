@@ -5,11 +5,14 @@ const axios = require("axios");
 // ========================================================
 
 /**
- * Normalize Prometheus base URL (removes trailing slashes and /api/v1 if included)
+ * Normalize Prometheus base URL (removes trailing slashes, /push, and /api/v1 if included)
  */
 function normalizeBaseUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== "string") return "";
     let trimmed = rawUrl.trim().replace(/\/+$/, "");
+    if (trimmed.endsWith("/push")) {
+        trimmed = trimmed.substring(0, trimmed.length - 5).replace(/\/+$/, "");
+    }
     if (trimmed.endsWith("/api/v1")) {
         trimmed = trimmed.substring(0, trimmed.length - 7).replace(/\/+$/, "");
     }
@@ -18,16 +21,29 @@ function normalizeBaseUrl(rawUrl) {
 
 /**
  * Resolve the active Prometheus provider and client configuration
+ * Accepts optional preferredProvider ("local" | "grafana_cloud")
  */
-function getPrometheusConfig() {
-    const cloudUrl = process.env.GRAFANA_CLOUD_PROMETHEUS_URL;
-    const cloudUser = process.env.GRAFANA_CLOUD_PROMETHEUS_USERNAME;
-    const cloudToken = process.env.GRAFANA_CLOUD_PROMETHEUS_TOKEN;
+function getPrometheusConfig(preferredProvider) {
+    const cloudUrl = process.env.GRAFANA_CLOUD_PROMETHEUS_URL || process.env.GRAFANA_CLOUD_REMOTE_WRITE_URL;
+    const cloudUser = process.env.GRAFANA_CLOUD_PROMETHEUS_USERNAME || process.env.GRAFANA_CLOUD_USER;
+    const cloudToken = process.env.GRAFANA_CLOUD_PROMETHEUS_TOKEN || process.env.GRAFANA_CLOUD_API_KEY;
     const localUrl = process.env.PROMETHEUS_URL || "http://prometheus:9090";
 
     const isCloudConfigured = Boolean(cloudUrl && cloudUrl.trim());
 
-    if (isCloudConfigured) {
+    if (preferredProvider === "local") {
+        return {
+            provider: "local",
+            isCloud: false,
+            isValid: true,
+            configError: null,
+            baseUrl: normalizeBaseUrl(localUrl),
+            auth: null,
+            timeout: 5000
+        };
+    }
+
+    if (preferredProvider === "grafana_cloud" || (preferredProvider !== "local" && isCloudConfigured)) {
         const username = cloudUser ? String(cloudUser).trim() : "";
         const token = cloudToken ? String(cloudToken).trim() : "";
 
@@ -36,7 +52,7 @@ function getPrometheusConfig() {
                 provider: "grafana_cloud",
                 isCloud: true,
                 isValid: false,
-                configError: "GRAFANA_CLOUD_PROMETHEUS_URL is configured, but GRAFANA_CLOUD_PROMETHEUS_USERNAME or GRAFANA_CLOUD_PROMETHEUS_TOKEN is missing.",
+                configError: "Grafana Cloud URL is configured, but username or API token is missing.",
                 baseUrl: normalizeBaseUrl(cloudUrl),
                 auth: null,
                 timeout: 10000
@@ -69,7 +85,7 @@ function getPrometheusConfig() {
 }
 
 // Preserve exported PROMETHEUS_URL compatibility
-const PROMETHEUS_URL = process.env.GRAFANA_CLOUD_PROMETHEUS_URL || process.env.PROMETHEUS_URL || "http://prometheus:9090";
+const PROMETHEUS_URL = process.env.GRAFANA_CLOUD_PROMETHEUS_URL || process.env.GRAFANA_CLOUD_REMOTE_WRITE_URL || process.env.PROMETHEUS_URL || "http://prometheus:9090";
 
 /**
  * Create configured Axios request options without exposing secrets in logs
@@ -138,8 +154,8 @@ function sanitizeError(error, context) {
  * Returns number if matching data exists, or null if no series match.
  * Throws on network, authentication, or query syntax failures.
  */
-async function queryInstant(queryExpr) {
-    const config = getPrometheusConfig();
+async function queryInstant(queryExpr, preferredProvider) {
+    const config = getPrometheusConfig(preferredProvider);
 
     if (!config.isValid) {
         console.error(`[PrometheusService] Configuration error: ${config.configError}`);
@@ -202,8 +218,8 @@ async function queryInstant(queryExpr) {
  * Execute a range query against Prometheus returning array of { timestamp, time, fullTime, value }
  * Aggregates multi-series by timestamp if multiple series are returned.
  */
-async function queryRange(queryExpr, startSeconds, endSeconds, stepSeconds) {
-    const config = getPrometheusConfig();
+async function queryRange(queryExpr, startSeconds, endSeconds, stepSeconds, preferredProvider) {
+    const config = getPrometheusConfig(preferredProvider);
 
     if (!config.isValid) {
         console.error(`[PrometheusService] Configuration error: ${config.configError}`);
@@ -335,16 +351,18 @@ async function checkPrometheusHealth() {
 
 /**
  * Specifically checks Grafana Cloud Prometheus metrics integration
+ * Validates authentication and checks if active metric samples are being ingested
  */
 async function checkGrafanaCloudHealth() {
-    const cloudUrl = process.env.GRAFANA_CLOUD_PROMETHEUS_URL;
-    const cloudUser = process.env.GRAFANA_CLOUD_PROMETHEUS_USERNAME;
-    const cloudToken = process.env.GRAFANA_CLOUD_PROMETHEUS_TOKEN;
+    const cloudUrl = process.env.GRAFANA_CLOUD_PROMETHEUS_URL || process.env.GRAFANA_CLOUD_REMOTE_WRITE_URL;
+    const cloudUser = process.env.GRAFANA_CLOUD_PROMETHEUS_USERNAME || process.env.GRAFANA_CLOUD_USER;
+    const cloudToken = process.env.GRAFANA_CLOUD_PROMETHEUS_TOKEN || process.env.GRAFANA_CLOUD_API_KEY;
 
     if (!cloudUrl || !cloudUrl.trim()) {
         return {
             configured: false,
             healthy: false,
+            ingested: false,
             details: "Grafana Cloud credentials not configured"
         };
     }
@@ -353,13 +371,14 @@ async function checkGrafanaCloudHealth() {
         return {
             configured: false,
             healthy: false,
+            ingested: false,
             details: "Missing Grafana Cloud username or API token"
         };
     }
 
     const config = {
         baseUrl: normalizeBaseUrl(cloudUrl),
-        timeout: 4000,
+        timeout: 5000,
         auth: {
             username: String(cloudUser).trim(),
             password: String(cloudToken).trim()
@@ -369,19 +388,45 @@ async function checkGrafanaCloudHealth() {
     try {
         const url = `${config.baseUrl}/api/v1/query`;
         const reqConfig = createRequestConfig(config, { query: "1" });
-        reqConfig.timeout = 3000;
+        reqConfig.timeout = 4000;
         const response = await axios.get(url, reqConfig);
         const isOk = response.data && response.data.status === "success";
+
+        if (!isOk) {
+            return {
+                configured: true,
+                healthy: false,
+                ingested: false,
+                details: "Grafana Cloud query returned non-success"
+            };
+        }
+
+        // Check if real metrics exist in Grafana Cloud (verifying remote_write ingestion)
+        let ingested = false;
+        let seriesCount = 0;
+        try {
+            const upRes = await axios.get(url, createRequestConfig(config, { query: "count(up)" }));
+            if (upRes.data?.status === "success" && Array.isArray(upRes.data?.data?.result) && upRes.data.data.result.length > 0) {
+                seriesCount = parseFloat(upRes.data.data.result[0].value[1]) || 0;
+                ingested = seriesCount > 0;
+            }
+        } catch (_) {}
+
         return {
             configured: true,
-            healthy: Boolean(isOk),
-            details: isOk ? "Ingestion and query active" : "Grafana Cloud query returned non-success"
+            healthy: true,
+            ingested,
+            seriesCount,
+            details: ingested
+                ? `Grafana Cloud active (${seriesCount} targets reporting)`
+                : "Grafana Cloud connected (read ok), but awaiting ingested metrics"
         };
     } catch (error) {
         const sanitized = sanitizeError(error, "Grafana Cloud health check");
         return {
             configured: true,
             healthy: false,
+            ingested: false,
             details: sanitized.message
         };
     }

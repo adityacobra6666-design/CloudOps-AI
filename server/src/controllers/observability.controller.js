@@ -238,7 +238,8 @@ exports.getTelemetry = async (req, res) => {
             }
 
         const { rangeKey, start, end, step } = parseRangeParams(req.query.range);
-        const config = getPrometheusConfig();
+        const preferredProvider = connectionId === "local" ? "local" : (connectionId === "grafana_cloud" ? "grafana_cloud" : undefined);
+        const config = getPrometheusConfig(preferredProvider);
 
         // 1. Metric Queries Definition
         // Host queries
@@ -286,24 +287,24 @@ exports.getTelemetry = async (req, res) => {
             ];
 
             const promises = [
-                queryInstant(qHostCpuInstant),
-                queryInstant(qProcessCpuInstant),
-                queryInstant(qHostMemInstant),
-                queryInstant(qProcessMemInstant),
-                queryInstant(qReqRateInstant),
-                queryInstant(qErrRateInstant),
-                queryInstant(qP95LatencyInstant),
-                queryInstant(qNetRxInstant),
-                queryInstant(qNetTxInstant),
-                queryRange(qHostCpuRange, start, end, step),
-                queryRange(qProcessCpuRange, start, end, step),
-                queryRange(qHostMemRange, start, end, step),
-                queryRange(qProcessMemRange, start, end, step),
-                queryRange(qReqRateRange, start, end, step),
-                queryRange(qErrRateRange, start, end, step),
-                queryRange(qP95LatencyRange, start, end, step),
-                queryRange(qNetRxRange, start, end, step),
-                queryRange(qNetTxRange, start, end, step)
+                queryInstant(qHostCpuInstant, preferredProvider),
+                queryInstant(qProcessCpuInstant, preferredProvider),
+                queryInstant(qHostMemInstant, preferredProvider),
+                queryInstant(qProcessMemInstant, preferredProvider),
+                queryInstant(qReqRateInstant, preferredProvider),
+                queryInstant(qErrRateInstant, preferredProvider),
+                queryInstant(qP95LatencyInstant, preferredProvider),
+                queryInstant(qNetRxInstant, preferredProvider),
+                queryInstant(qNetTxInstant, preferredProvider),
+                queryRange(qHostCpuRange, start, end, step, preferredProvider),
+                queryRange(qProcessCpuRange, start, end, step, preferredProvider),
+                queryRange(qHostMemRange, start, end, step, preferredProvider),
+                queryRange(qProcessMemRange, start, end, step, preferredProvider),
+                queryRange(qReqRateRange, start, end, step, preferredProvider),
+                queryRange(qErrRateRange, start, end, step, preferredProvider),
+                queryRange(qP95LatencyRange, start, end, step, preferredProvider),
+                queryRange(qNetRxRange, start, end, step, preferredProvider),
+                queryRange(qNetTxRange, start, end, step, preferredProvider)
             ];
 
             const settled = await Promise.allSettled(promises);
@@ -377,7 +378,7 @@ exports.getTelemetry = async (req, res) => {
 
         // Detect Grafana Cloud connected but missing data ingestion
         if (config.isCloud && !providerError && cpuValue === null && memValue === null && reqRateValue === null) {
-            providerError = "Grafana Cloud Prometheus is connected, but has received no metric data for the selected range. Verify that Prometheus remote_write or Grafana Alloy is configured to export metrics to Grafana Cloud, or select the Connected Agent environment.";
+            providerError = "Grafana Cloud Prometheus is connected (read ok), but has received no metric data for the selected range. Ingestion must be repaired and fresh samples collected before graphs can populate.";
         }
 
         // 9. Service Health checks
@@ -390,7 +391,7 @@ exports.getTelemetry = async (req, res) => {
             aiHealth = await aiProvider.checkAIHealth();
         } catch (_) {}
 
-        const isCloudConfigured = Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL);
+        const isCloudConfigured = Boolean(process.env.GRAFANA_CLOUD_PROMETHEUS_URL || process.env.GRAFANA_CLOUD_REMOTE_WRITE_URL);
         const isGrafanaCloudAlerting = process.env.ALERTING_PROVIDER === "grafana_cloud" || 
             (isCloudConfigured && process.env.ALERTING_PROVIDER !== "alertmanager");
 
@@ -418,7 +419,11 @@ exports.getTelemetry = async (req, res) => {
             { name: "MongoDB", status: mongoose.connection.readyState === 1 ? "Connected" : "Unavailable", details: mongoose.connection.readyState === 1 ? "Database connected" : "Database disconnected" },
             {
                 name: "Grafana Cloud Metrics",
-                status: cloudPromHealth.configured ? (cloudPromHealth.healthy ? (totalNetVal === null && cpuValue === null ? "Degraded" : "Connected") : "Unavailable") : "Not configured",
+                status: cloudPromHealth.configured
+                    ? (cloudPromHealth.healthy
+                        ? (cloudPromHealth.ingested ? "Connected" : "Degraded")
+                        : "Unavailable")
+                    : "Not configured",
                 details: cloudPromHealth.details
             },
             {

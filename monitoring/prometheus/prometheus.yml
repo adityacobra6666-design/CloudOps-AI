@@ -32,6 +32,14 @@ remote_write:
     basic_auth:
       username: "${GRAFANA_CLOUD_USER}"
       password: "${GRAFANA_CLOUD_API_KEY}"
+    queue_config:
+      capacity: 2500
+      max_shards: 4
+      min_shards: 1
+      max_samples_per_send: 500
+      batch_send_deadline: 10s
+      min_backoff: 1s
+      max_backoff: 30s
 #     write_relabel_configs:
 #       - target_label: cluster
 #         replacement: "cloudops-production"
