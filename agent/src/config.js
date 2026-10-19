@@ -40,7 +40,7 @@ module.exports = {
         .split(",")
         .map(s => s.trim())
         .filter(Boolean),
-    allowedDeployments: (process.env.ALLOWED_DEPLOYMENTS || "backend,cloudops-backend,cloudops-server,cloudops-mongodb")
+    allowedDeployments: (process.env.ALLOWED_DEPLOYMENTS || "backend,cloudops-backend,cloudops-server,cloudops-mongodb,cloudops-test,test-deployment")
         .split(",")
         .map(s => s.trim())
         .filter(Boolean),

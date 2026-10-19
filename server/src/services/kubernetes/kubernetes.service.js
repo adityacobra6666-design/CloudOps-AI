@@ -410,9 +410,12 @@ class KubernetesService {
                     name: dep.metadata?.name || "unknown",
                     namespace: dep.metadata?.namespace || ns,
                     desired,
+                    replicas: desired,
                     current,
                     ready,
+                    readyReplicas: ready,
                     available,
+                    availableReplicas: available,
                     status: isHealthy ? "HEALTHY" : (ready === 0 && desired > 0 ? "FAILED" : "DEGRADED"),
                     images,
                     creationTimestamp: dep.metadata?.creationTimestamp

@@ -59,18 +59,47 @@ async function resolveConnection(connectionId) {
         if (conn) return conn;
     }
 
-    if (connectionId === "grafana_cloud") {
+    // Handle connectionId === "local": user explicitly targeted local environment
+    if (connectionId === "local") {
+        try {
+            const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
+            if (kubernetesService && kubernetesService.checkConnection()) {
+                return null; // Signals direct local kubernetesService execution
+            }
+        } catch (e) {}
+
+        // If local cluster is not reachable, only bridge via an actively connected agent
+        const connected = await InfrastructureConnection.findOne({
+            status: "CONNECTED",
+            enabled: { $ne: false }
+        }).sort({ lastSeenAt: -1 });
+        if (connected && computeFreshStatus(connected) === "CONNECTED") {
+            return connected;
+        }
         return null;
     }
 
-    // connectionId is "local" or undefined: find connected agent
+    // connectionId is undefined / omitted:
+    // 1. If an agent is actively online and fresh, prefer it (e.g. Render environment bridging)
     const connected = await InfrastructureConnection.findOne({
         status: "CONNECTED",
         enabled: { $ne: false }
     }).sort({ lastSeenAt: -1 });
+    if (connected && computeFreshStatus(connected) === "CONNECTED") {
+        return connected;
+    }
+
+    // 2. If direct local kubeconfig is available, return null to use local cluster
+    try {
+        const { kubernetesService } = require("../services/kubernetes/kubernetes.service");
+        if (kubernetesService && kubernetesService.checkConnection()) {
+            return null;
+        }
+    } catch (e) {}
+
+    // 3. Fallback when neither local cluster nor active agent is available:
     if (connected) return connected;
 
-    // Fallback: any agent with recorded telemetry or k8sSummary
     const anyWithTelemetry = await InfrastructureConnection.findOne({
         $or: [
             { "telemetry.recordedAt": { $ne: null } },
@@ -80,7 +109,6 @@ async function resolveConnection(connectionId) {
     }).sort({ lastSeenAt: -1, updatedAt: -1 });
     if (anyWithTelemetry) return anyWithTelemetry;
 
-    // Fallback: any registered agent
     return await InfrastructureConnection.findOne({
         enabled: { $ne: false }
     }).sort({ createdAt: -1 });

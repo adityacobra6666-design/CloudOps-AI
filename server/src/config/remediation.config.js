@@ -43,17 +43,46 @@ const ALLOWED_TARGETS = {
         healthEndpoint: null,
         prometheusJob: "cloudops-mongodb",
         allowedActions: ["RESTART_SERVICE"] // Scaling prohibited for stateful singleton database
+    },
+    "cloudops-test": {
+        container: "cloudops-test",
+        deployment: "cloudops-test",
+        displayName: "CloudOps Test Workload",
+        healthEndpoint: null,
+        prometheusJob: null,
+        allowedActions: ["SCALE_SERVICE", "RESTART_SERVICE"]
+    },
+    "test-deployment": {
+        container: "test-deployment",
+        deployment: "test-deployment",
+        displayName: "Test Deployment",
+        healthEndpoint: null,
+        prometheusJob: null,
+        allowedActions: ["SCALE_SERVICE", "RESTART_SERVICE"]
     }
 };
 
 // Kubernetes integration configuration
+const envAllowedDeployments = (process.env.ALLOWED_DEPLOYMENTS || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
 const KUBERNETES_CONFIG = {
     enabled: process.env.KUBERNETES_ENABLED !== "false",
     defaultNamespace: process.env.KUBERNETES_NAMESPACE || "cloudops",
     minReplicas: 1,
     maxReplicas: 10,
     allowedNamespaces: ["cloudops", "default"],
-    allowedDeployments: ["backend", "cloudops-backend", "cloudops-server", "cloudops-mongodb"]
+    allowedDeployments: Array.from(new Set([
+        "backend",
+        "cloudops-backend",
+        "cloudops-server",
+        "cloudops-mongodb",
+        "cloudops-test",
+        "test-deployment",
+        ...envAllowedDeployments
+    ]))
 };
 
 

@@ -53,10 +53,9 @@ export default function KubernetesPage() {
                     const connections = res.connections || [];
                     setAvailableConnections(connections);
                     const connected = connections.find(c => c.status === "CONNECTED");
+                    // Only auto-select if an active agent is online and current selection is no longer valid
                     if (connected) {
-                        setSelectedEnvironment(current => (current === "local" || !connections.some(c => c._id === current)) ? connected._id : current);
-                    } else if (connections.length > 0) {
-                        setSelectedEnvironment(current => (current === "local" || !connections.some(c => c._id === current)) ? connections[0]._id : current);
+                        setSelectedEnvironment(current => (!current || (!connections.some(c => c._id === current) && current !== "local")) ? connected._id : current);
                     }
                 }
             } catch (e) {
@@ -149,8 +148,6 @@ export default function KubernetesPage() {
         if (selectedEnvironment && selectedEnvironment !== "local") {
             return selectedEnvironment;
         }
-        const connected = availableConnections.find(c => c.status === "CONNECTED") || availableConnections[0];
-        if (connected?._id) return connected._id;
         return undefined;
     };
 
@@ -195,10 +192,10 @@ export default function KubernetesPage() {
                 setScaleModalOpen(false);
                 setOperationalProgress(null);
 
-                // Refresh immediately, and schedule follow-up refreshes to capture pod lifecycle convergence
-                fetchK8s(effectiveConnectionId || selectedEnvironment);
-                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 2500);
-                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 5000);
+                // Refresh immediately without tearing down screen, then poll convergence
+                fetchK8s(effectiveConnectionId || selectedEnvironment, false, true);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment, false, false), 2500);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment, false, false), 5000);
             } else {
                 setErrorMsg(res.message || "Scale action failed or was rejected.");
             }
@@ -252,10 +249,10 @@ export default function KubernetesPage() {
                 setRestartModalOpen(false);
                 setOperationalProgress(null);
 
-                // Refresh immediately, then at 2.5s and 6s to display replaced pods in pod table
-                fetchK8s(effectiveConnectionId || selectedEnvironment);
-                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 2500);
-                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment), 6000);
+                // Refresh immediately without tearing down screen, then poll convergence
+                fetchK8s(effectiveConnectionId || selectedEnvironment, false, true);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment, false, false), 2500);
+                setTimeout(() => fetchK8s(effectiveConnectionId || selectedEnvironment, false, false), 6000);
             } else {
                 setErrorMsg(res.message || "Restart action failed or was rejected.");
             }
@@ -895,7 +892,7 @@ export default function KubernetesPage() {
 
             {/* SCALE MODAL */}
             {scaleModalOpen && targetDeployment && (() => {
-                const currentReplicas = Number(targetDeployment.ready ?? targetDeployment.readyReplicas ?? targetDeployment.desired ?? targetDeployment.replicas ?? 1);
+                const currentReplicas = Number(targetDeployment.desired ?? targetDeployment.replicas ?? targetDeployment.readyReplicas ?? targetDeployment.ready ?? 1);
                 const desiredVal = parseInt(desiredReplicas, 10);
                 const isValid = !isNaN(desiredVal) && desiredVal >= 1 && desiredVal <= 10 && Number.isInteger(Number(desiredReplicas));
                 const delta = isValid ? (desiredVal - currentReplicas) : 0;
@@ -905,9 +902,13 @@ export default function KubernetesPage() {
                         <div
                             className="modal-backdrop"
                             onClick={() => !actionLoading && setScaleModalOpen(false)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Escape" && !actionLoading) setScaleModalOpen(false);
+                            }}
                             role="dialog"
                             aria-modal="true"
                             aria-labelledby="scale-modal-title"
+                            tabIndex={-1}
                         >
                             <div className="modal-content" style={{ maxWidth: "480px" }} onClick={(e) => e.stopPropagation()}>
                                 <div className="modal-header">
@@ -980,7 +981,7 @@ export default function KubernetesPage() {
                                             <div style={{ textAlign: "right" }}>
                                                 <div style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--color-text-muted)" }}>Change</div>
                                                 <span className={`status-pill compact-pill ${delta > 0 ? "success" : delta < 0 ? "warning" : "neutral"}`} style={{ fontSize: "0.82rem", fontWeight: 600, padding: "4px 8px" }}>
-                                                    {delta > 0 ? `+${delta} (Scale Out)` : delta < 0 ? `${delta} (Scale In)` : "No Change"}
+                                                    {delta > 0 ? `+${delta} (Scale Out)` : delta < 0 ? `${delta} (Scale In)` : "Re-apply (Sync)"}
                                                 </span>
                                             </div>
                                         </div>
@@ -999,6 +1000,7 @@ export default function KubernetesPage() {
                                                     style={{ width: "38px", height: "38px", padding: 0, fontSize: "1.1rem", fontWeight: 700 }}
                                                     disabled={actionLoading || desiredVal <= 1}
                                                     onClick={() => setDesiredReplicas(Math.max(1, (desiredVal || currentReplicas) - 1))}
+                                                    aria-label="Decrease replica count"
                                                 >
                                                     -
                                                 </button>
@@ -1013,6 +1015,8 @@ export default function KubernetesPage() {
                                                     style={{ textAlign: "center", fontSize: "1.1rem", fontWeight: 700, height: "38px" }}
                                                     required
                                                     disabled={actionLoading}
+                                                    aria-label="Desired Replicas"
+                                                    autoFocus
                                                 />
                                                 <button
                                                     type="button"
@@ -1020,6 +1024,7 @@ export default function KubernetesPage() {
                                                     style={{ width: "38px", height: "38px", padding: 0, fontSize: "1.1rem", fontWeight: 700 }}
                                                     disabled={actionLoading || desiredVal >= 10}
                                                     onClick={() => setDesiredReplicas(Math.min(10, (desiredVal || currentReplicas) + 1))}
+                                                    aria-label="Increase replica count"
                                                 >
                                                     +
                                                 </button>
@@ -1065,13 +1070,15 @@ export default function KubernetesPage() {
                                         <button
                                             type="submit"
                                             className="btn btn-primary"
-                                            disabled={actionLoading || !isValid || delta === 0}
+                                            disabled={actionLoading || !isValid}
                                         >
                                             {actionLoading ? (
                                                 <>
                                                     <span className="btn-spinner" />
                                                     Applying Scale...
                                                 </>
+                                            ) : delta === 0 ? (
+                                                `Confirm Re-apply (${isValid ? desiredVal : ""} Pods)`
                                             ) : (
                                                 `Confirm Scale to ${isValid ? desiredVal : ""} Pods`
                                             )}
@@ -1093,9 +1100,13 @@ export default function KubernetesPage() {
                         <div
                             className="modal-backdrop"
                             onClick={() => !actionLoading && setRestartModalOpen(false)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Escape" && !actionLoading) setRestartModalOpen(false);
+                            }}
                             role="dialog"
                             aria-modal="true"
                             aria-labelledby="restart-modal-title"
+                            tabIndex={-1}
                         >
                             <div className="modal-content" style={{ maxWidth: "480px" }} onClick={(e) => e.stopPropagation()}>
                                 <div className="modal-header">
